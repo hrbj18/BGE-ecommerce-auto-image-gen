@@ -9,10 +9,14 @@
 - 前端：`frontend/src/App.jsx`、`frontend/src/styles.css`
 - 文件夹工作流：`npm run folder`
 - Web：`npm run web`
+- 新电脑无付费初始化：`pnpm run bootstrap`
+- 快速无付费验收：`pnpm run verify:quick`
+- 完整无付费回归：`pnpm run verify:free`
 - 类型检查：`npm run typecheck`
 - 全量测试：`npm test`
 - 上下文审计：`npm run handoff:audit`
 - GitHub 发布集合审计：`npm run release:audit`
+- 首次接手合同：`docs/handoff/FIRST_RUN.md`
 - 便携 pnpm 命令解析：`scripts/runtime-commands.mjs`
 - GitHub CI：`.github/workflows/ci.yml`
 - 现有成品视觉审计：`npm run audit:output -- --dir <成品目录>`；经明确授权的定向返工追加 `--retry-failed`

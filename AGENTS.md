@@ -11,6 +11,7 @@
 
 随后只读取与当前任务匹配的一个专题文件，再检查相关源码：
 
+- 新电脑、首次克隆、零成本接手：`docs/handoff/FIRST_RUN.md`
 - 生图质量、提示词、分镜、返工：`docs/handoff/GENERATION_PIPELINE.md`
 - 前端、后端、历史任务、局域网、一键启动：`docs/handoff/WEB_APP.md`
 - 模型、API、中转站、密钥、并发、超时：`docs/handoff/MODEL_PROVIDERS.md`
@@ -44,5 +45,5 @@
 完成重大改动后运行：
 
 ```powershell
-npm run handoff:audit
+pnpm run handoff:audit
 ```

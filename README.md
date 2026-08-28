@@ -27,10 +27,16 @@
 ```powershell
 corepack enable
 pnpm install --frozen-lockfile
-Copy-Item .env.example .env
+pnpm run bootstrap
 ```
 
-在 `.env` 中填入自己拥有的凭据，再运行：
+`bootstrap` 会创建缺失的运行目录和空白 `.env`，但绝不覆盖已有配置，也不会调用任何模型。先执行无付费快速验收：
+
+```powershell
+pnpm run verify:quick
+```
+
+新电脑或新 Codex 的完整接手说明见 `docs/handoff/FIRST_RUN.md`。需要真实生图时，再在本机 `.env` 中填入自己拥有的凭据并运行：
 
 ```powershell
 pnpm run web
@@ -75,6 +81,8 @@ pnpm test
 pnpm run frontend:build
 pnpm run handoff:audit
 pnpm run release:audit
+pnpm run verify:quick
+pnpm run verify:free
 ```
 
 `release:audit` 会检查拟提交文件，阻止密钥、客户输入、历史成品、缓存和超大文件进入版本库。GitHub Actions 会在 Windows 环境执行类型检查、全量测试、前端构建和两类审计。

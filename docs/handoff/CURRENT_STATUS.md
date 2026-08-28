@@ -19,6 +19,7 @@
 - 已完成 GitHub 封装准备：本地 Git 已初始化为 `main`；仓库只纳入源码、测试、规则、空配置样例、脱敏需求模板和抽象案例库，排除 `.env`、客户输入、历史成品、日志、缓存与依赖。
 - 启动编排已移除当前电脑的 Node/pnpm 绝对路径，改为复用当前 pnpm 运行时或 PATH；一键启动会验证 Node.js 24+。
 - 已增加 `pnpm run release:audit` 与 Windows GitHub Actions，提交前和 CI 中检查敏感信息、用户数据、超大文件、类型、测试、构建和 handoff 完整性。
+- 已增加 `FIRST_RUN.md`、非破坏性 `pnpm run bootstrap`、快速 `verify:quick` 和完整 `verify:free`；新电脑或新 Codex 不依赖历史聊天、不调用真实模型即可完成接手验收。
 
 ## 当前风险
 
