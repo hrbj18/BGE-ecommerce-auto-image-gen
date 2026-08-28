@@ -24,6 +24,15 @@
 
 ## 本地启动
 
+私有仓库成员可先克隆并进入项目：
+
+```powershell
+git clone https://github.com/hrbj18/BGE-ecommerce-auto-image-gen.git
+Set-Location BGE-ecommerce-auto-image-gen
+```
+
+然后初始化环境：
+
 ```powershell
 corepack enable
 pnpm install --frozen-lockfile

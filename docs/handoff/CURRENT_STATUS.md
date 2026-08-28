@@ -20,6 +20,7 @@
 - 启动编排已移除当前电脑的 Node/pnpm 绝对路径，改为复用当前 pnpm 运行时或 PATH；一键启动会验证 Node.js 24+。
 - 已增加 `pnpm run release:audit` 与 Windows GitHub Actions，提交前和 CI 中检查敏感信息、用户数据、超大文件、类型、测试、构建和 handoff 完整性。
 - 已增加 `FIRST_RUN.md`、非破坏性 `pnpm run bootstrap`、快速 `verify:quick` 和完整 `verify:free`；新电脑或新 Codex 不依赖历史聊天、不调用真实模型即可完成接手验收。
+- 私有远端仓库为 `https://github.com/hrbj18/BGE-ecommerce-auto-image-gen`，默认分支 `main`；公开发布仍需另行完成素材授权和许可证审查。
 
 ## 当前风险
 

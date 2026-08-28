@@ -20,7 +20,14 @@
 
 ## Windows 首次初始化
 
-要求 Node.js 24+，在仓库根目录运行：
+要求 Git、Node.js 24+。首次下载：
+
+```powershell
+git clone https://github.com/hrbj18/BGE-ecommerce-auto-image-gen.git
+Set-Location BGE-ecommerce-auto-image-gen
+```
+
+在仓库根目录运行：
 
 ```powershell
 node --version
