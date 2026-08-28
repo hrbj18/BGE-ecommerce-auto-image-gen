@@ -80,6 +80,16 @@ for (const file of files) {
 
 if (!files.includes(allowedReference)) errors.push(`Required reference library is missing: ${allowedReference}`);
 if (!files.includes("待作图/需求模板.md")) errors.push("Sanitized input template is missing: 待作图/需求模板.md");
+const workspaceConfig = readFileSync(resolve(root, "pnpm-workspace.yaml"), "utf8");
+if (!/^packages:\s*$[\s\S]*?^\s+-\s+frontend\s*$/mu.test(workspaceConfig)) {
+  errors.push("pnpm workspace must include frontend for clean-clone installs.");
+}
+for (const dependency of ["esbuild", "sharp"]) {
+  const allowPattern = new RegExp(`^\\s{2}${dependency}:\\s+true\\s*$`, "mu");
+  if (!allowPattern.test(workspaceConfig)) {
+    errors.push(`pnpm allowBuilds must explicitly trust ${dependency}.`);
+  }
+}
 
 if (errors.length > 0) {
   console.error(`Release audit failed with ${errors.length} issue(s):`);
