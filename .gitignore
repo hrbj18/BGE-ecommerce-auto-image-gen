@@ -1,0 +1,54 @@
+# Secrets: keep only the blank template in Git.
+.env
+.env.*
+!.env.example
+
+# Dependencies, package-manager caches and build output.
+node_modules/
+frontend/node_modules/
+frontend/.npm-cache/
+frontend/dist/
+**/__pycache__/
+*.py[cod]
+
+# Local UI review screenshots (runtime previews stay under frontend/public).
+frontend/connected-*.png
+frontend/design-*.png
+
+# Local runtime state, logs and generated artifacts.
+.local-web/
+logs/
+data/
+output/
+artifacts/
+.test-targeted.log
+*.log
+*.tmp
+*.zip
+
+# User inputs, historical prompts and generated customer assets.
+待作图/*
+!待作图/需求模板.md
+已完成/*
+!已完成/参考案例分析/
+已完成/参考案例分析/*
+!已完成/参考案例分析/zcool-case-library.json
+AI电商生图提示词/
+优秀案例/
+
+# Historical delivery copies and workstation-only notes.
+交付资料/
+开发文档/
+skill/
+00-先看这里-交付使用说明.md
+00-先看这里-Codex接手说明.md
+本次优化指导文档-逐图创意导演升级.md
+给Codex看的运行说明.md
+项目启动方式说明.md
+design-qa.md
+
+# OS and editor state.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

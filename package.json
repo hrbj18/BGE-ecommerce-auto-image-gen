@@ -1,0 +1,36 @@
+{
+  "name": "local-ecommerce-image-worker",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "type": "module",
+  "description": "Local folder and Excel driven ecommerce image automation worker.",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "excel": "node src/cli.ts excel",
+    "folder": "node src/cli.ts folder",
+    "worker": "node src/cli.ts feishu:worker",
+    "once": "node src/cli.ts feishu:once",
+    "web": "node scripts/dev-web-app.mjs",
+    "backend:dev": "node scripts/local-web-server.mjs",
+    "frontend:dev": "pnpm --dir frontend run dev",
+    "frontend:build": "pnpm --dir frontend run build",
+    "build:template": "node scripts/build_excel_template.mjs",
+    "handoff:audit": "python scripts/audit_handoff.py --root .",
+    "release:audit": "node scripts/audit-release.mjs",
+    "release:check": "pnpm run typecheck && pnpm run frontend:build && pnpm run handoff:audit && pnpm run release:audit",
+    "audit:output": "node src/audit-output.ts",
+    "test": "node --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "sharp": "^0.34.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

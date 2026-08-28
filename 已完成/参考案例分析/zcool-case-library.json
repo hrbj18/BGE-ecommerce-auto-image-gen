@@ -1,0 +1,1289 @@
+{
+  "capturedAt": "2026-06-13T06:34:03.489Z",
+  "total": 33,
+  "successful": 29,
+  "failed": 4,
+  "categories": {
+    "美妆洗护": 1,
+    "综合电商": 8,
+    "服饰穿搭": 4,
+    "食品饮品": 9,
+    "宠物食品": 2,
+    "杯壶水具": 1,
+    "家电": 3,
+    "宠物": 1
+  },
+  "styles": {
+    "无线端详情页": 16,
+    "材质细节感": 4,
+    "品牌高级感": 7,
+    "食欲真实感": 3,
+    "功能科技感": 4,
+    "亲和童趣": 2,
+    "成熟电商详情页": 6,
+    "货架强点击": 3
+  },
+  "cases": [
+    {
+      "caseId": "detail-61613212971",
+      "source": "design006",
+      "title": "简约大气家具家装书柜床头柜柜子详情页PSD 设计素材和海报模板免费下载-享设计",
+      "sourceUrl": "https://www.design006.com/detail-61613212971",
+      "imageCount": 107,
+      "largeImageCount": 1,
+      "largestImages": [
+        {
+          "naturalWidth": 790,
+          "naturalHeight": 13894,
+          "alt": "源文件下载【享设计】搜索编号：94570032129712370【简约大气家具家装书柜床头柜柜子详情页】"
+        }
+      ],
+      "inferred": {
+        "category": "美妆洗护",
+        "style": "无线端详情页",
+        "structureSignals": [
+          "完整无线端长详情页，适合拆成首屏、痛点、功能、场景、细节、参数、收尾的连续叙事。",
+          "design006 预览图直接呈现电商详情页本体，可学习模块顺序、标题层级和卖点证明方式。",
+          "只学习排版结构和视觉逻辑，不复制模板原图、文字、版权素材或品牌元素。"
+        ],
+        "transferableRules": [
+          "完整详情页长图要像销售话术一样排序：先立商品价值，再回答顾虑，再证明卖点，最后降低选择成本。",
+          "主视觉首屏要用大产品和强标题建立点击后停留，不能第一屏就塞满小字参数。",
+          "功能/结构型产品必须安排局部放大、操作动作或场景证据，文字只是解释，画面才是证明。",
+          "详情页中段要有一屏专门做细节信任：材质、结构、图案、屏幕、开口、接口等按产品类型选择。",
+          "参数/选择建议只能基于已提供信息，不能编容量、材质、认证、检测数据。"
+        ]
+      }
+    },
+    {
+      "caseId": "detail-68403085951",
+      "source": "design006",
+      "title": "简约大气家装家用梳妆台桌子详情页PSD 设计素材和海报模板免费下载-享设计",
+      "sourceUrl": "https://www.design006.com/detail-68403085951",
+      "imageCount": 107,
+      "largeImageCount": 1,
+      "largestImages": [
+        {
+          "naturalWidth": 790,
+          "naturalHeight": 11672,
+          "alt": "源文件下载【享设计】搜索编号：73150030859519917【简约大气家装家用梳妆台桌子详情页】"
+        }
+      ],
+      "inferred": {
+        "category": "综合电商",
+        "style": "无线端详情页",
+        "structureSignals": [
+          "完整无线端长详情页，适合拆成首屏、痛点、功能、场景、细节、参数、收尾的连续叙事。",
+          "design006 预览图直接呈现电商详情页本体，可学习模块顺序、标题层级和卖点证明方式。",
+          "只学习排版结构和视觉逻辑，不复制模板原图、文字、版权素材或品牌元素。"
+        ],
+        "transferableRules": [
+          "完整详情页长图要像销售话术一样排序：先立商品价值，再回答顾虑，再证明卖点，最后降低选择成本。",
+          "主视觉首屏要用大产品和强标题建立点击后停留，不能第一屏就塞满小字参数。",
+          "功能/结构型产品必须安排局部放大、操作动作或场景证据，文字只是解释，画面才是证明。",
+          "详情页中段要有一屏专门做细节信任：材质、结构、图案、屏幕、开口、接口等按产品类型选择。",
+          "参数/选择建议只能基于已提供信息，不能编容量、材质、认证、检测数据。"
+        ]
+      }
+    },
+    {
+      "caseId": "detail-48653620166",
+      "source": "design006",
+      "title": "沙发详情页详情页PSD 设计素材和海报模板免费下载-享设计",
+      "sourceUrl": "https://www.design006.com/detail-48653620166",
+      "imageCount": 71,
+      "largeImageCount": 1,
+      "largestImages": [
+        {
+          "naturalWidth": 750,
+          "naturalHeight": 15879,
+          "alt": "源文件下载【享设计】搜索编号：20020036201669185【沙发详情页详情页】"
+        }
+      ],
+      "inferred": {
+        "category": "综合电商",
+        "style": "无线端详情页",
+        "structureSignals": [
+          "完整无线端长详情页，适合拆成首屏、痛点、功能、场景、细节、参数、收尾的连续叙事。",
+          "design006 预览图直接呈现电商详情页本体，可学习模块顺序、标题层级和卖点证明方式。",
+          "只学习排版结构和视觉逻辑，不复制模板原图、文字、版权素材或品牌元素。"
+        ],
+        "transferableRules": [
+          "完整详情页长图要像销售话术一样排序：先立商品价值，再回答顾虑，再证明卖点，最后降低选择成本。",
+          "主视觉首屏要用大产品和强标题建立点击后停留，不能第一屏就塞满小字参数。",
+          "功能/结构型产品必须安排局部放大、操作动作或场景证据，文字只是解释，画面才是证明。",
+          "详情页中段要有一屏专门做细节信任：材质、结构、图案、屏幕、开口、接口等按产品类型选择。",
+          "参数/选择建议只能基于已提供信息，不能编容量、材质、认证、检测数据。"
+        ]
+      }
+    },
+    {
+      "caseId": "detail-80303326687",
+      "source": "design006",
+      "title": "人体工学椅PSD 设计素材和海报模板免费下载-享设计",
+      "sourceUrl": "https://www.design006.com/detail-80303326687",
+      "imageCount": 107,
+      "largeImageCount": 1,
+      "largestImages": [
+        {
+          "naturalWidth": 750,
+          "naturalHeight": 13488,
+          "alt": "源文件下载【享设计】搜索编号：63410033266873833【人体工学椅】"
+        }
+      ],
+      "inferred": {
+        "category": "综合电商",
+        "style": "无线端详情页",
+        "structureSignals": [
+          "完整无线端长详情页，适合拆成首屏、痛点、功能、场景、细节、参数、收尾的连续叙事。",
+          "design006 预览图直接呈现电商详情页本体，可学习模块顺序、标题层级和卖点证明方式。",
+          "只学习排版结构和视觉逻辑，不复制模板原图、文字、版权素材或品牌元素。"
+        ],
+        "transferableRules": [
+          "完整详情页长图要像销售话术一样排序：先立商品价值，再回答顾虑，再证明卖点，最后降低选择成本。",
+          "主视觉首屏要用大产品和强标题建立点击后停留，不能第一屏就塞满小字参数。",
+          "功能/结构型产品必须安排局部放大、操作动作或场景证据，文字只是解释，画面才是证明。",
+          "详情页中段要有一屏专门做细节信任：材质、结构、图案、屏幕、开口、接口等按产品类型选择。",
+          "参数/选择建议只能基于已提供信息，不能编容量、材质、认证、检测数据。"
+        ]
+      }
+    },
+    {
+      "caseId": "detail-77793415096",
+      "source": "design006",
+      "title": "户外野餐躺卧折叠椅PSD 设计素材和海报模板免费下载-享设计",
+      "sourceUrl": "https://www.design006.com/detail-77793415096",
+      "imageCount": 71,
+      "largeImageCount": 1,
+      "largestImages": [
+        {
+          "naturalWidth": 750,
+          "naturalHeight": 20142,
+          "alt": "源文件下载【享设计】搜索编号：63580034150964201【户外野餐躺卧折叠椅】"
+        }
+      ],
+      "inferred": {
+        "category": "综合电商",
+        "style": "无线端详情页",
+        "structureSignals": [
+          "完整无线端长详情页，适合拆成首屏、痛点、功能、场景、细节、参数、收尾的连续叙事。",
+          "design006 预览图直接呈现电商详情页本体，可学习模块顺序、标题层级和卖点证明方式。",
+          "只学习排版结构和视觉逻辑，不复制模板原图、文字、版权素材或品牌元素。"
+        ],
+        "transferableRules": [
+          "完整详情页长图要像销售话术一样排序：先立商品价值，再回答顾虑，再证明卖点，最后降低选择成本。",
+          "主视觉首屏要用大产品和强标题建立点击后停留，不能第一屏就塞满小字参数。",
+          "功能/结构型产品必须安排局部放大、操作动作或场景证据，文字只是解释，画面才是证明。",
+          "详情页中段要有一屏专门做细节信任：材质、结构、图案、屏幕、开口、接口等按产品类型选择。",
+          "参数/选择建议只能基于已提供信息，不能编容量、材质、认证、检测数据。"
+        ]
+      }
+    },
+    {
+      "caseId": "detail-16403219813",
+      "source": "design006",
+      "title": "鹅卵石炒锅详情页PSD 设计素材和海报模板免费下载-享设计",
+      "sourceUrl": "https://www.design006.com/detail-16403219813",
+      "imageCount": 67,
+      "largeImageCount": 1,
+      "largestImages": [
+        {
+          "naturalWidth": 790,
+          "naturalHeight": 15000,
+          "alt": "源文件下载【享设计】搜索编号：75410032198139602【鹅卵石炒锅详情页】"
+        }
+      ],
+      "inferred": {
+        "category": "综合电商",
+        "style": "无线端详情页",
+        "structureSignals": [
+          "完整无线端长详情页，适合拆成首屏、痛点、功能、场景、细节、参数、收尾的连续叙事。",
+          "design006 预览图直接呈现电商详情页本体，可学习模块顺序、标题层级和卖点证明方式。",
+          "只学习排版结构和视觉逻辑，不复制模板原图、文字、版权素材或品牌元素。"
+        ],
+        "transferableRules": [
+          "完整详情页长图要像销售话术一样排序：先立商品价值，再回答顾虑，再证明卖点，最后降低选择成本。",
+          "主视觉首屏要用大产品和强标题建立点击后停留，不能第一屏就塞满小字参数。",
+          "功能/结构型产品必须安排局部放大、操作动作或场景证据，文字只是解释，画面才是证明。",
+          "详情页中段要有一屏专门做细节信任：材质、结构、图案、屏幕、开口、接口等按产品类型选择。",
+          "参数/选择建议只能基于已提供信息，不能编容量、材质、认证、检测数据。"
+        ]
+      }
+    },
+    {
+      "caseId": "detail-19772915894",
+      "source": "design006",
+      "title": "一次性内裤日用品潮流电商详情页PSD 设计素材和海报模板免费下载-享设计",
+      "sourceUrl": "https://www.design006.com/detail-19772915894",
+      "imageCount": 107,
+      "largeImageCount": 1,
+      "largestImages": [
+        {
+          "naturalWidth": 900,
+          "naturalHeight": 14996,
+          "alt": "源文件下载【享设计】搜索编号：33730029158944285【一次性内裤日用品潮流电商详情页】"
+        }
+      ],
+      "inferred": {
+        "category": "服饰穿搭",
+        "style": "材质细节感、品牌高级感、无线端详情页",
+        "structureSignals": [
+          "完整无线端长详情页，适合拆成首屏、痛点、功能、场景、细节、参数、收尾的连续叙事。",
+          "design006 预览图直接呈现电商详情页本体，可学习模块顺序、标题层级和卖点证明方式。",
+          "只学习排版结构和视觉逻辑，不复制模板原图、文字、版权素材或品牌元素。"
+        ],
+        "transferableRules": [
+          "完整详情页长图要像销售话术一样排序：先立商品价值，再回答顾虑，再证明卖点，最后降低选择成本。",
+          "主视觉首屏要用大产品和强标题建立点击后停留，不能第一屏就塞满小字参数。",
+          "功能/结构型产品必须安排局部放大、操作动作或场景证据，文字只是解释，画面才是证明。",
+          "详情页中段要有一屏专门做细节信任：材质、结构、图案、屏幕、开口、接口等按产品类型选择。",
+          "参数/选择建议只能基于已提供信息，不能编容量、材质、认证、检测数据。",
+          "服饰类用穿着场景、面料近景和版型/细节拆解建立信任，文字克制。"
+        ]
+      }
+    },
+    {
+      "caseId": "detail-21973155568",
+      "source": "design006",
+      "title": "宝宝婴儿衣服详情页设计PSD 设计素材和海报模板免费下载-享设计",
+      "sourceUrl": "https://www.design006.com/detail-21973155568",
+      "imageCount": 91,
+      "largeImageCount": 1,
+      "largestImages": [
+        {
+          "naturalWidth": 790,
+          "naturalHeight": 13739,
+          "alt": "源文件下载【享设计】搜索编号：58500031555689007【宝宝婴儿衣服详情页设计】"
+        }
+      ],
+      "inferred": {
+        "category": "服饰穿搭",
+        "style": "材质细节感、无线端详情页",
+        "structureSignals": [
+          "完整无线端长详情页，适合拆成首屏、痛点、功能、场景、细节、参数、收尾的连续叙事。",
+          "design006 预览图直接呈现电商详情页本体，可学习模块顺序、标题层级和卖点证明方式。",
+          "只学习排版结构和视觉逻辑，不复制模板原图、文字、版权素材或品牌元素。"
+        ],
+        "transferableRules": [
+          "完整详情页长图要像销售话术一样排序：先立商品价值，再回答顾虑，再证明卖点，最后降低选择成本。",
+          "主视觉首屏要用大产品和强标题建立点击后停留，不能第一屏就塞满小字参数。",
+          "功能/结构型产品必须安排局部放大、操作动作或场景证据，文字只是解释，画面才是证明。",
+          "详情页中段要有一屏专门做细节信任：材质、结构、图案、屏幕、开口、接口等按产品类型选择。",
+          "参数/选择建议只能基于已提供信息，不能编容量、材质、认证、检测数据。",
+          "服饰类用穿着场景、面料近景和版型/细节拆解建立信任，文字克制。"
+        ]
+      }
+    },
+    {
+      "caseId": "detail-45823625294",
+      "source": "design006",
+      "title": "无骨鸡爪详情PSD 设计素材和海报模板免费下载-享设计",
+      "sourceUrl": "https://www.design006.com/detail-45823625294",
+      "imageCount": 107,
+      "largeImageCount": 1,
+      "largestImages": [
+        {
+          "naturalWidth": 750,
+          "naturalHeight": 14272,
+          "alt": "源文件下载【享设计】搜索编号：21040036252944097【无骨鸡爪详情】"
+        }
+      ],
+      "inferred": {
+        "category": "食品饮品",
+        "style": "食欲真实感、无线端详情页",
+        "structureSignals": [
+          "完整无线端长详情页，适合拆成首屏、痛点、功能、场景、细节、参数、收尾的连续叙事。",
+          "design006 预览图直接呈现电商详情页本体，可学习模块顺序、标题层级和卖点证明方式。",
+          "只学习排版结构和视觉逻辑，不复制模板原图、文字、版权素材或品牌元素。"
+        ],
+        "transferableRules": [
+          "完整详情页长图要像销售话术一样排序：先立商品价值，再回答顾虑，再证明卖点，最后降低选择成本。",
+          "主视觉首屏要用大产品和强标题建立点击后停留，不能第一屏就塞满小字参数。",
+          "功能/结构型产品必须安排局部放大、操作动作或场景证据，文字只是解释，画面才是证明。",
+          "详情页中段要有一屏专门做细节信任：材质、结构、图案、屏幕、开口、接口等按产品类型选择。",
+          "参数/选择建议只能基于已提供信息，不能编容量、材质、认证、检测数据。",
+          "食品类用真实食材质感、开袋/食用场景和信任信息建立转化，避免空泛高级感。"
+        ]
+      }
+    },
+    {
+      "caseId": "detail-49322654371",
+      "source": "design006",
+      "title": "宠物用品零食猫条电商详情PSD 设计素材和海报模板免费下载-享设计",
+      "sourceUrl": "https://www.design006.com/detail-49322654371",
+      "imageCount": 79,
+      "largeImageCount": 1,
+      "largestImages": [
+        {
+          "naturalWidth": 790,
+          "naturalHeight": 18778,
+          "alt": "源文件下载【享设计】搜索编号：83490026543711044【宠物用品零食猫条电商详情】"
+        }
+      ],
+      "inferred": {
+        "category": "宠物食品",
+        "style": "食欲真实感、无线端详情页",
+        "structureSignals": [
+          "完整无线端长详情页，适合拆成首屏、痛点、功能、场景、细节、参数、收尾的连续叙事。",
+          "design006 预览图直接呈现电商详情页本体，可学习模块顺序、标题层级和卖点证明方式。",
+          "只学习排版结构和视觉逻辑，不复制模板原图、文字、版权素材或品牌元素。"
+        ],
+        "transferableRules": [
+          "完整详情页长图要像销售话术一样排序：先立商品价值，再回答顾虑，再证明卖点，最后降低选择成本。",
+          "主视觉首屏要用大产品和强标题建立点击后停留，不能第一屏就塞满小字参数。",
+          "功能/结构型产品必须安排局部放大、操作动作或场景证据，文字只是解释，画面才是证明。",
+          "详情页中段要有一屏专门做细节信任：材质、结构、图案、屏幕、开口、接口等按产品类型选择。",
+          "参数/选择建议只能基于已提供信息，不能编容量、材质、认证、检测数据。",
+          "食品类用真实食材质感、开袋/食用场景和信任信息建立转化，避免空泛高级感。"
+        ]
+      }
+    },
+    {
+      "caseId": "detail-50463166837",
+      "source": "design006",
+      "title": "牛腩详情页PSD 设计素材和海报模板免费下载-享设计",
+      "sourceUrl": "https://www.design006.com/detail-50463166837",
+      "imageCount": 67,
+      "largeImageCount": 1,
+      "largestImages": [
+        {
+          "naturalWidth": 1460,
+          "naturalHeight": 13792,
+          "alt": "源文件下载【享设计】搜索编号：30600031668375749【牛腩详情页】"
+        }
+      ],
+      "inferred": {
+        "category": "综合电商",
+        "style": "品牌高级感、无线端详情页",
+        "structureSignals": [
+          "分屏详情海报，单屏主题清楚，节奏较短。",
+          "design006 预览图直接呈现电商详情页本体，可学习模块顺序、标题层级和卖点证明方式。",
+          "只学习排版结构和视觉逻辑，不复制模板原图、文字、版权素材或品牌元素。"
+        ],
+        "transferableRules": [
+          "完整详情页长图要像销售话术一样排序：先立商品价值，再回答顾虑，再证明卖点，最后降低选择成本。",
+          "主视觉首屏要用大产品和强标题建立点击后停留，不能第一屏就塞满小字参数。",
+          "功能/结构型产品必须安排局部放大、操作动作或场景证据，文字只是解释，画面才是证明。",
+          "详情页中段要有一屏专门做细节信任：材质、结构、图案、屏幕、开口、接口等按产品类型选择。",
+          "参数/选择建议只能基于已提供信息，不能编容量、材质、认证、检测数据。"
+        ]
+      }
+    },
+    {
+      "caseId": "detail-52843150710",
+      "source": "design006",
+      "title": "餐盒电商详情页PSD 设计素材和海报模板免费下载-享设计",
+      "sourceUrl": "https://www.design006.com/detail-52843150710",
+      "imageCount": 107,
+      "largeImageCount": 1,
+      "largestImages": [
+        {
+          "naturalWidth": 790,
+          "naturalHeight": 15443,
+          "alt": "源文件下载【享设计】搜索编号：72060031507106923【餐盒电商详情页】"
+        }
+      ],
+      "inferred": {
+        "category": "杯壶水具",
+        "style": "品牌高级感、无线端详情页",
+        "structureSignals": [
+          "完整无线端长详情页，适合拆成首屏、痛点、功能、场景、细节、参数、收尾的连续叙事。",
+          "design006 预览图直接呈现电商详情页本体，可学习模块顺序、标题层级和卖点证明方式。",
+          "只学习排版结构和视觉逻辑，不复制模板原图、文字、版权素材或品牌元素。"
+        ],
+        "transferableRules": [
+          "完整详情页长图要像销售话术一样排序：先立商品价值，再回答顾虑，再证明卖点，最后降低选择成本。",
+          "主视觉首屏要用大产品和强标题建立点击后停留，不能第一屏就塞满小字参数。",
+          "功能/结构型产品必须安排局部放大、操作动作或场景证据，文字只是解释，画面才是证明。",
+          "详情页中段要有一屏专门做细节信任：材质、结构、图案、屏幕、开口、接口等按产品类型选择。",
+          "参数/选择建议只能基于已提供信息，不能编容量、材质、认证、检测数据。",
+          "杯壶水具要围绕杯盖、杯口、杯身图案、携带/书包/桌面场景建立购买理由。"
+        ]
+      }
+    },
+    {
+      "caseId": "detail-63833016710",
+      "source": "design006",
+      "title": "鲜肉低温烘焙猫粮PSD 设计素材和海报模板免费下载-享设计",
+      "sourceUrl": "https://www.design006.com/detail-63833016710",
+      "imageCount": 107,
+      "largeImageCount": 1,
+      "largestImages": [
+        {
+          "naturalWidth": 790,
+          "naturalHeight": 19298,
+          "alt": "源文件下载【享设计】搜索编号：53270030167108010【鲜肉低温烘焙猫粮】"
+        }
+      ],
+      "inferred": {
+        "category": "宠物食品",
+        "style": "功能科技感、食欲真实感、品牌高级感、无线端详情页",
+        "structureSignals": [
+          "完整无线端长详情页，适合拆成首屏、痛点、功能、场景、细节、参数、收尾的连续叙事。",
+          "design006 预览图直接呈现电商详情页本体，可学习模块顺序、标题层级和卖点证明方式。",
+          "只学习排版结构和视觉逻辑，不复制模板原图、文字、版权素材或品牌元素。"
+        ],
+        "transferableRules": [
+          "完整详情页长图要像销售话术一样排序：先立商品价值，再回答顾虑，再证明卖点，最后降低选择成本。",
+          "主视觉首屏要用大产品和强标题建立点击后停留，不能第一屏就塞满小字参数。",
+          "功能/结构型产品必须安排局部放大、操作动作或场景证据，文字只是解释，画面才是证明。",
+          "详情页中段要有一屏专门做细节信任：材质、结构、图案、屏幕、开口、接口等按产品类型选择。",
+          "参数/选择建议只能基于已提供信息，不能编容量、材质、认证、检测数据。",
+          "食品类用真实食材质感、开袋/食用场景和信任信息建立转化，避免空泛高级感。"
+        ]
+      }
+    },
+    {
+      "caseId": "detail-91442441791",
+      "source": "design006",
+      "title": "夏季儿童防晒衣详情PSD 设计素材和海报模板免费下载-享设计",
+      "sourceUrl": "https://www.design006.com/detail-91442441791",
+      "imageCount": 99,
+      "largeImageCount": 1,
+      "largestImages": [
+        {
+          "naturalWidth": 790,
+          "naturalHeight": 20216,
+          "alt": "源文件下载【享设计】搜索编号：22490024417914205【夏季儿童防晒衣详情】"
+        }
+      ],
+      "inferred": {
+        "category": "服饰穿搭",
+        "style": "材质细节感、无线端详情页",
+        "structureSignals": [
+          "完整无线端长详情页，适合拆成首屏、痛点、功能、场景、细节、参数、收尾的连续叙事。",
+          "design006 预览图直接呈现电商详情页本体，可学习模块顺序、标题层级和卖点证明方式。",
+          "只学习排版结构和视觉逻辑，不复制模板原图、文字、版权素材或品牌元素。"
+        ],
+        "transferableRules": [
+          "完整详情页长图要像销售话术一样排序：先立商品价值，再回答顾虑，再证明卖点，最后降低选择成本。",
+          "主视觉首屏要用大产品和强标题建立点击后停留，不能第一屏就塞满小字参数。",
+          "功能/结构型产品必须安排局部放大、操作动作或场景证据，文字只是解释，画面才是证明。",
+          "详情页中段要有一屏专门做细节信任：材质、结构、图案、屏幕、开口、接口等按产品类型选择。",
+          "参数/选择建议只能基于已提供信息，不能编容量、材质、认证、检测数据。",
+          "服饰类用穿着场景、面料近景和版型/细节拆解建立信任，文字克制。"
+        ]
+      }
+    },
+    {
+      "caseId": "detail-95663235003",
+      "source": "design006",
+      "title": "纯棉翻领短袖详情页PSD 设计素材和海报模板免费下载-享设计",
+      "sourceUrl": "https://www.design006.com/detail-95663235003",
+      "imageCount": 75,
+      "largeImageCount": 1,
+      "largestImages": [
+        {
+          "naturalWidth": 790,
+          "naturalHeight": 19049,
+          "alt": "源文件下载【享设计】搜索编号：28890032350036363【纯棉翻领短袖详情页】"
+        }
+      ],
+      "inferred": {
+        "category": "服饰穿搭",
+        "style": "材质细节感、无线端详情页",
+        "structureSignals": [
+          "完整无线端长详情页，适合拆成首屏、痛点、功能、场景、细节、参数、收尾的连续叙事。",
+          "design006 预览图直接呈现电商详情页本体，可学习模块顺序、标题层级和卖点证明方式。",
+          "只学习排版结构和视觉逻辑，不复制模板原图、文字、版权素材或品牌元素。"
+        ],
+        "transferableRules": [
+          "完整详情页长图要像销售话术一样排序：先立商品价值，再回答顾虑，再证明卖点，最后降低选择成本。",
+          "主视觉首屏要用大产品和强标题建立点击后停留，不能第一屏就塞满小字参数。",
+          "功能/结构型产品必须安排局部放大、操作动作或场景证据，文字只是解释，画面才是证明。",
+          "详情页中段要有一屏专门做细节信任：材质、结构、图案、屏幕、开口、接口等按产品类型选择。",
+          "参数/选择建议只能基于已提供信息，不能编容量、材质、认证、检测数据。",
+          "服饰类用穿着场景、面料近景和版型/细节拆解建立信任，文字克制。"
+        ]
+      }
+    },
+    {
+      "caseId": "detail-97673631119",
+      "source": "design006",
+      "title": "日用百货详情PSD 设计素材和海报模板免费下载-享设计",
+      "sourceUrl": "https://www.design006.com/detail-97673631119",
+      "imageCount": 107,
+      "largeImageCount": 1,
+      "largestImages": [
+        {
+          "naturalWidth": 790,
+          "naturalHeight": 12802,
+          "alt": "源文件下载【享设计】搜索编号：65300036311199098【日用百货详情】"
+        }
+      ],
+      "inferred": {
+        "category": "综合电商",
+        "style": "功能科技感、无线端详情页",
+        "structureSignals": [
+          "完整无线端长详情页，适合拆成首屏、痛点、功能、场景、细节、参数、收尾的连续叙事。",
+          "design006 预览图直接呈现电商详情页本体，可学习模块顺序、标题层级和卖点证明方式。",
+          "只学习排版结构和视觉逻辑，不复制模板原图、文字、版权素材或品牌元素。"
+        ],
+        "transferableRules": [
+          "完整详情页长图要像销售话术一样排序：先立商品价值，再回答顾虑，再证明卖点，最后降低选择成本。",
+          "主视觉首屏要用大产品和强标题建立点击后停留，不能第一屏就塞满小字参数。",
+          "功能/结构型产品必须安排局部放大、操作动作或场景证据，文字只是解释，画面才是证明。",
+          "详情页中段要有一屏专门做细节信任：材质、结构、图案、屏幕、开口、接口等按产品类型选择。",
+          "参数/选择建议只能基于已提供信息，不能编容量、材质、认证、检测数据。"
+        ]
+      }
+    },
+    {
+      "caseId": "ZNTY5NTk5NjA=",
+      "title": "眠趣蓝胖子枕详情分享 I DAXIN VISION_大欣传媒-站酷ZCOOL",
+      "sourceUrl": "https://www.zcool.com.cn/work/ZNTY5NTk5NjA=.html",
+      "imageCount": 191,
+      "largeImageCount": 18,
+      "largestImages": [
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 8980,
+          "alt": "眠趣蓝胖子枕详情分享 I DAXIN VISION（图ZMjgxMzc2ODcy） - 电商 - 站酷设计师大欣传媒原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 7210,
+          "alt": "眠趣蓝胖子枕详情分享 I DAXIN VISION（图ZMjgxMzc2ODY0） - 电商 - 站酷设计师大欣传媒原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 6240,
+          "alt": "眠趣蓝胖子枕详情分享 I DAXIN VISION（图ZMjgxMzc2ODI4） - 电商 - 站酷设计师大欣传媒原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 6195,
+          "alt": "眠趣蓝胖子枕详情分享 I DAXIN VISION（图ZMjgxMzc2ODY4） - 电商 - 站酷设计师大欣传媒原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "矢量扁平风美妆品类电商图标-免抠图icon"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "购物电商矢量插画"
+        }
+      ],
+      "inferred": {
+        "category": "食品饮品",
+        "style": "亲和童趣",
+        "structureSignals": [
+          "以多张超长详情图承载完整叙事，每张长图内包含多个模块转场。",
+          "页面更接近海报式分屏，单屏主题要更聚焦。",
+          "站酷案例通常用大面积场景图建立调性，再用局部特写、信息块和参数区完成购买理由。"
+        ],
+        "transferableRules": [
+          "第一屏先回答“这是什么、适合谁、为什么值得点开”，商品主体必须最大且最清楚。",
+          "每张主图只承担一个转化任务：点击、核心功能证明、场景代入、细节信任、决策收尾。",
+          "详情页要先给核心主张，再讲痛点/场景，再拆功能结构，最后给规格和选择建议。",
+          "文字要短、准、大层级，手机端先读标题，再读副标题，细节标注只服务证明点。",
+          "全案共享色彩、光线、字体和图形语言，不能每屏换一种海报风格。"
+        ]
+      }
+    },
+    {
+      "caseId": "ZNTYwMjU0MTY=",
+      "title": "详情X3 落地风扇详情页 数据线详情页 加加湿器详情页_596ST-站酷ZCOOL",
+      "sourceUrl": "https://www.zcool.com.cn/work/ZNTYwMjU0MTY=.html",
+      "imageCount": 194,
+      "largeImageCount": 18,
+      "largestImages": [
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 5788,
+          "alt": "详情X3 落地风扇详情页 数据线详情页 加加湿器详情页（图ZMjc1NTMxNzUy） - 电商 - 站酷设计师596ST原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 5534,
+          "alt": "详情X3 落地风扇详情页 数据线详情页 加加湿器详情页（图ZMjc1NTMxNzY0） - 电商 - 站酷设计师596ST原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 5405,
+          "alt": "详情X3 落地风扇详情页 数据线详情页 加加湿器详情页（图ZMjc1NTMxNzk2） - 电商 - 站酷设计师596ST原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "电商购物矢量插画"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "矢量扁平风美妆品类电商图标-免抠图icon"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "矢量扁平风服装品类电商图标-免抠图icon"
+        }
+      ],
+      "inferred": {
+        "category": "家电",
+        "style": "功能科技感",
+        "structureSignals": [
+          "以多张超长详情图承载完整叙事，每张长图内包含多个模块转场。",
+          "页面更接近海报式分屏，单屏主题要更聚焦。",
+          "站酷案例通常用大面积场景图建立调性，再用局部特写、信息块和参数区完成购买理由。"
+        ],
+        "transferableRules": [
+          "第一屏先回答“这是什么、适合谁、为什么值得点开”，商品主体必须最大且最清楚。",
+          "每张主图只承担一个转化任务：点击、核心功能证明、场景代入、细节信任、决策收尾。",
+          "详情页要先给核心主张，再讲痛点/场景，再拆功能结构，最后给规格和选择建议。",
+          "文字要短、准、大层级，手机端先读标题，再读副标题，细节标注只服务证明点。",
+          "全案共享色彩、光线、字体和图形语言，不能每屏换一种海报风格。",
+          "智能/功能型产品要用近景屏幕、操作动作、使用前后情境证明功能，避免只做氛围图。"
+        ]
+      }
+    },
+    {
+      "caseId": "ZNTc5MzgxMjg=",
+      "sourceUrl": "https://www.zcool.com.cn/work/ZNTc5MzgxMjg=.html",
+      "capturedAt": "2026-06-13T06:18:19.874Z",
+      "error": "page.waitForTimeout: Target page, context or browser has been closed"
+    },
+    {
+      "caseId": "ZNjM4MjY3MTY=",
+      "title": "加湿器详情 居家风格详情页_卡不卡Boom-站酷ZCOOL",
+      "sourceUrl": "https://www.zcool.com.cn/work/ZNjM4MjY3MTY=.html",
+      "imageCount": 187,
+      "largeImageCount": 18,
+      "largestImages": [
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 6035,
+          "alt": "加湿器详情 居家风格详情页（图ZMzI5MjcwNTky） - 电商 - 站酷设计师卡不卡Boom原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 6010,
+          "alt": "加湿器详情 居家风格详情页（图ZMzI5MjcwNTk2） - 电商 - 站酷设计师卡不卡Boom原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 5920,
+          "alt": "加湿器详情 居家风格详情页（图ZMzI5MjcwNjAw） - 电商 - 站酷设计师卡不卡Boom原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 4571,
+          "alt": "加湿器详情 居家风格详情页（图ZMzI5MjcwNTg4） - 电商 - 站酷设计师卡不卡Boom原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 2722,
+          "alt": "加湿器详情 居家风格详情页（图ZMzI5MjcwNTg0） - 电商 - 站酷设计师卡不卡Boom原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "3D电商图标-免抠icon"
+        }
+      ],
+      "inferred": {
+        "category": "食品饮品",
+        "style": "成熟电商详情页",
+        "structureSignals": [
+          "以多张超长详情图承载完整叙事，每张长图内包含多个模块转场。",
+          "页面更接近海报式分屏，单屏主题要更聚焦。",
+          "站酷案例通常用大面积场景图建立调性，再用局部特写、信息块和参数区完成购买理由。"
+        ],
+        "transferableRules": [
+          "第一屏先回答“这是什么、适合谁、为什么值得点开”，商品主体必须最大且最清楚。",
+          "每张主图只承担一个转化任务：点击、核心功能证明、场景代入、细节信任、决策收尾。",
+          "详情页要先给核心主张，再讲痛点/场景，再拆功能结构，最后给规格和选择建议。",
+          "文字要短、准、大层级，手机端先读标题，再读副标题，细节标注只服务证明点。",
+          "全案共享色彩、光线、字体和图形语言，不能每屏换一种海报风格。"
+        ]
+      }
+    },
+    {
+      "caseId": "ZNjQ0NzMyNzI=",
+      "sourceUrl": "https://www.zcool.com.cn/work/ZNjQ0NzMyNzI=.html",
+      "capturedAt": "2026-06-13T06:16:50.734Z",
+      "error": "page.goto: Timeout 90000ms exceeded.\nCall log:\n\u001b[2m  - navigating to \"https://www.zcool.com.cn/work/ZNjQ0NzMyNzI=.html\", waiting until \"domcontentloaded\"\u001b[22m\n"
+    },
+    {
+      "caseId": "ZNjY3MDU3NzY=",
+      "title": "章小白品牌视觉策划 3D定制矫正鞋垫全案分享_章小白品牌视觉-站酷ZCOOL",
+      "sourceUrl": "https://www.zcool.com.cn/work/ZNjY3MDU3NzY=.html",
+      "imageCount": 183,
+      "largeImageCount": 18,
+      "largestImages": [
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 9376,
+          "alt": "章小白品牌视觉策划 3D定制矫正鞋垫全案分享（图ZMzUyNDUyMjAw） - 电商 - 站酷设计师章小白品牌视觉原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 7193,
+          "alt": "章小白品牌视觉策划 3D定制矫正鞋垫全案分享（图ZMzUyNDUyMjA0） - 电商 - 站酷设计师章小白品牌视觉原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 6733,
+          "alt": "章小白品牌视觉策划 3D定制矫正鞋垫全案分享（图ZMzUyNDUyMjA4） - 电商 - 站酷设计师章小白品牌视觉原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "电商图标-免抠icon"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "3D电商图标-会员徽章免抠图"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "3D电商图标-免抠icon"
+        }
+      ],
+      "inferred": {
+        "category": "综合电商",
+        "style": "品牌高级感、货架强点击",
+        "structureSignals": [
+          "以多张超长详情图承载完整叙事，每张长图内包含多个模块转场。",
+          "页面更接近海报式分屏，单屏主题要更聚焦。",
+          "站酷案例通常用大面积场景图建立调性，再用局部特写、信息块和参数区完成购买理由。"
+        ],
+        "transferableRules": [
+          "第一屏先回答“这是什么、适合谁、为什么值得点开”，商品主体必须最大且最清楚。",
+          "每张主图只承担一个转化任务：点击、核心功能证明、场景代入、细节信任、决策收尾。",
+          "详情页要先给核心主张，再讲痛点/场景，再拆功能结构，最后给规格和选择建议。",
+          "文字要短、准、大层级，手机端先读标题，再读副标题，细节标注只服务证明点。",
+          "全案共享色彩、光线、字体和图形语言，不能每屏换一种海报风格。"
+        ]
+      }
+    },
+    {
+      "caseId": "ZNjYyODM1ODQ=",
+      "sourceUrl": "https://www.zcool.com.cn/work/ZNjYyODM1ODQ=.html",
+      "capturedAt": "2026-06-13T06:12:38.362Z",
+      "error": "page.goto: Timeout 90000ms exceeded.\nCall log:\n\u001b[2m  - navigating to \"https://www.zcool.com.cn/work/ZNjYyODM1ODQ=.html\", waiting until \"domcontentloaded\"\u001b[22m\n"
+    },
+    {
+      "caseId": "ZNjg1NTExNDg=",
+      "title": "304不锈钢水槽详情页_奔跑的小窝-站酷ZCOOL",
+      "sourceUrl": "https://www.zcool.com.cn/work/ZNjg1NTExNDg=.html",
+      "imageCount": 177,
+      "largeImageCount": 18,
+      "largestImages": [
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 10142,
+          "alt": "304不锈钢水槽详情页（图ZMzY4NjA2OTAw） - 产品 - 站酷设计师奔跑的小窝原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 9142,
+          "alt": "304不锈钢水槽详情页（图ZMzY4NjA2OTA0） - 产品 - 站酷设计师奔跑的小窝原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 2257,
+          "alt": "304不锈钢水槽详情页（图ZMzY4NjA2ODIw） - 产品 - 站酷设计师奔跑的小窝原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 1811,
+          "alt": "304不锈钢水槽详情页（图ZMzY4NjA2ODEy） - 产品 - 站酷设计师奔跑的小窝原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "电商产品植物美妆自然植物背景"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "电商产品植物美妆自然植物背景"
+        }
+      ],
+      "inferred": {
+        "category": "家电",
+        "style": "成熟电商详情页",
+        "structureSignals": [
+          "以少量长图或分段海报承载详情节奏。",
+          "页面更接近海报式分屏，单屏主题要更聚焦。",
+          "站酷案例通常用大面积场景图建立调性，再用局部特写、信息块和参数区完成购买理由。"
+        ],
+        "transferableRules": [
+          "第一屏先回答“这是什么、适合谁、为什么值得点开”，商品主体必须最大且最清楚。",
+          "每张主图只承担一个转化任务：点击、核心功能证明、场景代入、细节信任、决策收尾。",
+          "详情页要先给核心主张，再讲痛点/场景，再拆功能结构，最后给规格和选择建议。",
+          "文字要短、准、大层级，手机端先读标题，再读副标题，细节标注只服务证明点。",
+          "全案共享色彩、光线、字体和图形语言，不能每屏换一种海报风格。"
+        ]
+      }
+    },
+    {
+      "caseId": "ZNzE0MDA0NzY=",
+      "title": "X3 炒锅详情页渲染详情全案分享 不粘锅 麦饭石 不锈钢_魔创视觉_Moture-站酷ZCOOL",
+      "sourceUrl": "https://www.zcool.com.cn/work/ZNzE0MDA0NzY=.html",
+      "imageCount": 190,
+      "largeImageCount": 18,
+      "largestImages": [
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 12183,
+          "alt": "X3 炒锅详情页渲染详情全案分享 不粘锅 麦饭石 不锈钢（图ZMzg1NjI5MTky） - 电商 - 站酷设计师魔创视觉_Moture原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 9688,
+          "alt": "X3 炒锅详情页渲染详情全案分享 不粘锅 麦饭石 不锈钢（图ZMzg1NjI5MTg4） - 电商 - 站酷设计师魔创视觉_Moture原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 8182,
+          "alt": "X3 炒锅详情页渲染详情全案分享 不粘锅 麦饭石 不锈钢（图ZMzg1NjI5Mjcy） - 电商 - 站酷设计师魔创视觉_Moture原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 7968,
+          "alt": "X3 炒锅详情页渲染详情全案分享 不粘锅 麦饭石 不锈钢（图ZMzg1NjI5MjAw） - 电商 - 站酷设计师魔创视觉_Moture原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 7914,
+          "alt": "X3 炒锅详情页渲染详情全案分享 不粘锅 麦饭石 不锈钢（图ZMzg1NjI5MTk2） - 电商 - 站酷设计师魔创视觉_Moture原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 7538,
+          "alt": "X3 炒锅详情页渲染详情全案分享 不粘锅 麦饭石 不锈钢（图ZMzg1NjI5MjQ0） - 电商 - 站酷设计师魔创视觉_Moture原创素材 - 站酷ZCOOL"
+        }
+      ],
+      "inferred": {
+        "category": "宠物",
+        "style": "成熟电商详情页",
+        "structureSignals": [
+          "以多张超长详情图承载完整叙事，每张长图内包含多个模块转场。",
+          "页面更接近海报式分屏，单屏主题要更聚焦。",
+          "站酷案例通常用大面积场景图建立调性，再用局部特写、信息块和参数区完成购买理由。"
+        ],
+        "transferableRules": [
+          "第一屏先回答“这是什么、适合谁、为什么值得点开”，商品主体必须最大且最清楚。",
+          "每张主图只承担一个转化任务：点击、核心功能证明、场景代入、细节信任、决策收尾。",
+          "详情页要先给核心主张，再讲痛点/场景，再拆功能结构，最后给规格和选择建议。",
+          "文字要短、准、大层级，手机端先读标题，再读副标题，细节标注只服务证明点。",
+          "全案共享色彩、光线、字体和图形语言，不能每屏换一种海报风格。"
+        ]
+      }
+    },
+    {
+      "caseId": "ZNzE4Nzc0Njg=",
+      "title": "内衣详情页设计_灵犀电商视觉-站酷ZCOOL",
+      "sourceUrl": "https://www.zcool.com.cn/work/ZNzE4Nzc0Njg=.html",
+      "imageCount": 187,
+      "largeImageCount": 18,
+      "largestImages": [
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "矢量扁平风服装品类电商图标-免抠图icon"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "电商购物矢量插画"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "电商图标-免抠icon"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "矢量扁平风美妆品类电商图标-免抠图icon"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "矢量扁平风服装品类电商图标-免抠图icon"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "3D电商图标-免抠icon"
+        }
+      ],
+      "inferred": {
+        "category": "食品饮品",
+        "style": "成熟电商详情页",
+        "structureSignals": [
+          "以少量长图或分段海报承载详情节奏。",
+          "页面更接近海报式分屏，单屏主题要更聚焦。",
+          "站酷案例通常用大面积场景图建立调性，再用局部特写、信息块和参数区完成购买理由。"
+        ],
+        "transferableRules": [
+          "第一屏先回答“这是什么、适合谁、为什么值得点开”，商品主体必须最大且最清楚。",
+          "每张主图只承担一个转化任务：点击、核心功能证明、场景代入、细节信任、决策收尾。",
+          "详情页要先给核心主张，再讲痛点/场景，再拆功能结构，最后给规格和选择建议。",
+          "文字要短、准、大层级，手机端先读标题，再读副标题，细节标注只服务证明点。",
+          "全案共享色彩、光线、字体和图形语言，不能每屏换一种海报风格。"
+        ]
+      }
+    },
+    {
+      "caseId": "ZNzI0MDk5NjA=",
+      "title": "袜子详情页设计_灵犀电商视觉-站酷ZCOOL",
+      "sourceUrl": "https://www.zcool.com.cn/work/ZNzI0MDk5NjA=.html",
+      "imageCount": 180,
+      "largeImageCount": 18,
+      "largestImages": [
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "电商购物矢量插画"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "矢量扁平风服装品类电商图标-免抠图icon"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "3D电商图标-免抠icon"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "3D电商图标-免抠icon"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "矢量扁平风服装品类电商图标-免抠图icon"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "矢量扁平风美妆品类电商图标-免抠图icon"
+        }
+      ],
+      "inferred": {
+        "category": "食品饮品",
+        "style": "成熟电商详情页",
+        "structureSignals": [
+          "以少量长图或分段海报承载详情节奏。",
+          "页面更接近海报式分屏，单屏主题要更聚焦。",
+          "站酷案例通常用大面积场景图建立调性，再用局部特写、信息块和参数区完成购买理由。"
+        ],
+        "transferableRules": [
+          "第一屏先回答“这是什么、适合谁、为什么值得点开”，商品主体必须最大且最清楚。",
+          "每张主图只承担一个转化任务：点击、核心功能证明、场景代入、细节信任、决策收尾。",
+          "详情页要先给核心主张，再讲痛点/场景，再拆功能结构，最后给规格和选择建议。",
+          "文字要短、准、大层级，手机端先读标题，再读副标题，细节标注只服务证明点。",
+          "全案共享色彩、光线、字体和图形语言，不能每屏换一种海报风格。"
+        ]
+      }
+    },
+    {
+      "caseId": "ZNzI4NzM5MzI=",
+      "title": "电商详情页 | 卸妆油详情_蓉fox-站酷ZCOOL",
+      "sourceUrl": "https://www.zcool.com.cn/work/ZNzI4NzM5MzI=.html",
+      "imageCount": 110,
+      "largeImageCount": 18,
+      "largestImages": [
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "矢量扁平风服装品类电商图标-免抠图icon"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "电商图标-免抠icon"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "矢量扁平风美妆品类电商图标-免抠图icon"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "3D电商图标-免抠icon"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "3D电商图标-免抠icon"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "矢量扁平风服装品类电商图标-免抠图icon"
+        }
+      ],
+      "inferred": {
+        "category": "食品饮品",
+        "style": "功能科技感、亲和童趣",
+        "structureSignals": [
+          "以少量长图或分段海报承载详情节奏。",
+          "页面更接近海报式分屏，单屏主题要更聚焦。",
+          "站酷案例通常用大面积场景图建立调性，再用局部特写、信息块和参数区完成购买理由。"
+        ],
+        "transferableRules": [
+          "第一屏先回答“这是什么、适合谁、为什么值得点开”，商品主体必须最大且最清楚。",
+          "每张主图只承担一个转化任务：点击、核心功能证明、场景代入、细节信任、决策收尾。",
+          "详情页要先给核心主张，再讲痛点/场景，再拆功能结构，最后给规格和选择建议。",
+          "文字要短、准、大层级，手机端先读标题，再读副标题，细节标注只服务证明点。",
+          "全案共享色彩、光线、字体和图形语言，不能每屏换一种海报风格。",
+          "智能/功能型产品要用近景屏幕、操作动作、使用前后情境证明功能，避免只做氛围图。"
+        ]
+      }
+    },
+    {
+      "caseId": "ZNzMxMTYzNDA=",
+      "title": "电商详情页分享 I 毛球修剪器 I AI生成 I 详情排版_杭州设计M小姐-站酷ZCOOL",
+      "sourceUrl": "https://www.zcool.com.cn/work/ZNzMxMTYzNDA=.html",
+      "imageCount": 205,
+      "largeImageCount": 18,
+      "largestImages": [
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 2086,
+          "alt": "电商详情页分享 I 毛球修剪器 I AI生成 I 详情排版（图ZNDAyMjMwOTQ4） - 电商 - 站酷设计师杭州设计M小姐原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 1907,
+          "alt": "电商详情页分享 I 毛球修剪器 I AI生成 I 详情排版（图ZNDAyMjMwOTY4） - 电商 - 站酷设计师杭州设计M小姐原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 1798,
+          "alt": "电商详情页分享 I 毛球修剪器 I AI生成 I 详情排版（图ZNDAyMjMwOTgw） - 电商 - 站酷设计师杭州设计M小姐原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 1770,
+          "alt": "电商详情页分享 I 毛球修剪器 I AI生成 I 详情排版（图ZNDAyMjMwOTY0） - 电商 - 站酷设计师杭州设计M小姐原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "3D电商图标-会员徽章免抠图"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "矢量扁平风美妆品类电商图标-免抠图icon"
+        }
+      ],
+      "inferred": {
+        "category": "家电",
+        "style": "成熟电商详情页",
+        "structureSignals": [
+          "以少量长图或分段海报承载详情节奏。",
+          "页面更接近海报式分屏，单屏主题要更聚焦。",
+          "站酷案例通常用大面积场景图建立调性，再用局部特写、信息块和参数区完成购买理由。"
+        ],
+        "transferableRules": [
+          "第一屏先回答“这是什么、适合谁、为什么值得点开”，商品主体必须最大且最清楚。",
+          "每张主图只承担一个转化任务：点击、核心功能证明、场景代入、细节信任、决策收尾。",
+          "详情页要先给核心主张，再讲痛点/场景，再拆功能结构，最后给规格和选择建议。",
+          "文字要短、准、大层级，手机端先读标题，再读副标题，细节标注只服务证明点。",
+          "全案共享色彩、光线、字体和图形语言，不能每屏换一种海报风格。"
+        ]
+      }
+    },
+    {
+      "caseId": "ZNzMyMDkxMTI=",
+      "title": "溏心松花皮蛋 I 电商详情页 I 食品农产品 I 详情排版_八月春风-站酷ZCOOL",
+      "sourceUrl": "https://www.zcool.com.cn/work/ZNzMyMDkxMTI=.html",
+      "imageCount": 197,
+      "largeImageCount": 18,
+      "largestImages": [
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 2790,
+          "alt": "溏心松花皮蛋 I 电商详情页 I 食品农产品 I 详情排版（图ZNDAzMTE0NDEy） - 海报 - 站酷设计师八月春风原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 2474,
+          "alt": "溏心松花皮蛋 I 电商详情页 I 食品农产品 I 详情排版（图ZNDAzMTE0NDE2） - 海报 - 站酷设计师八月春风原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 2194,
+          "alt": "溏心松花皮蛋 I 电商详情页 I 食品农产品 I 详情排版（图ZNDAzMTE0Mzg0） - 海报 - 站酷设计师八月春风原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 1967,
+          "alt": "溏心松花皮蛋 I 电商详情页 I 食品农产品 I 详情排版（图ZNDAzMTE0NDUy） - 海报 - 站酷设计师八月春风原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 1868,
+          "alt": "溏心松花皮蛋 I 电商详情页 I 食品农产品 I 详情排版（图ZNDAzMTEzMDc2） - 海报 - 站酷设计师八月春风原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 1858,
+          "alt": "溏心松花皮蛋 I 电商详情页 I 食品农产品 I 详情排版（图ZNDAzMTE0Mzcy） - 海报 - 站酷设计师八月春风原创素材 - 站酷ZCOOL"
+        }
+      ],
+      "inferred": {
+        "category": "食品饮品",
+        "style": "货架强点击",
+        "structureSignals": [
+          "以少量长图或分段海报承载详情节奏。",
+          "页面更接近海报式分屏，单屏主题要更聚焦。",
+          "站酷案例通常用大面积场景图建立调性，再用局部特写、信息块和参数区完成购买理由。"
+        ],
+        "transferableRules": [
+          "第一屏先回答“这是什么、适合谁、为什么值得点开”，商品主体必须最大且最清楚。",
+          "每张主图只承担一个转化任务：点击、核心功能证明、场景代入、细节信任、决策收尾。",
+          "详情页要先给核心主张，再讲痛点/场景，再拆功能结构，最后给规格和选择建议。",
+          "文字要短、准、大层级，手机端先读标题，再读副标题，细节标注只服务证明点。",
+          "全案共享色彩、光线、字体和图形语言，不能每屏换一种海报风格。"
+        ]
+      }
+    },
+    {
+      "caseId": "ZNzMzNzk1Njg=",
+      "title": "电商详情｜曲奇蛋卷详情页设计_几何匠心品牌设计-站酷ZCOOL",
+      "sourceUrl": "https://www.zcool.com.cn/work/ZNzMzNzk1Njg=.html",
+      "imageCount": 190,
+      "largeImageCount": 18,
+      "largestImages": [
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 9425,
+          "alt": "电商详情｜曲奇蛋卷详情页设计（图ZNDA0NzkwMTQw） - 电商 - 站酷设计师几何匠心品牌设计原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 9425,
+          "alt": "电商详情｜曲奇蛋卷详情页设计（图ZNDA0NzkwMTky） - 电商 - 站酷设计师几何匠心品牌设计原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 5333,
+          "alt": "电商详情｜曲奇蛋卷详情页设计（图ZNDA0NzkwMTIw） - 电商 - 站酷设计师几何匠心品牌设计原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "电商购物矢量插画"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "3D电商图标-免抠icon"
+        },
+        {
+          "naturalWidth": 1500,
+          "naturalHeight": 1500,
+          "alt": "购物电商矢量插画"
+        }
+      ],
+      "inferred": {
+        "category": "食品饮品",
+        "style": "品牌高级感、货架强点击",
+        "structureSignals": [
+          "以多张超长详情图承载完整叙事，每张长图内包含多个模块转场。",
+          "页面更接近海报式分屏，单屏主题要更聚焦。",
+          "站酷案例通常用大面积场景图建立调性，再用局部特写、信息块和参数区完成购买理由。"
+        ],
+        "transferableRules": [
+          "第一屏先回答“这是什么、适合谁、为什么值得点开”，商品主体必须最大且最清楚。",
+          "每张主图只承担一个转化任务：点击、核心功能证明、场景代入、细节信任、决策收尾。",
+          "详情页要先给核心主张，再讲痛点/场景，再拆功能结构，最后给规格和选择建议。",
+          "文字要短、准、大层级，手机端先读标题，再读副标题，细节标注只服务证明点。",
+          "全案共享色彩、光线、字体和图形语言，不能每屏换一种海报风格。"
+        ]
+      }
+    },
+    {
+      "caseId": "ZNzMzODI0NDQ=",
+      "sourceUrl": "https://www.zcool.com.cn/work/ZNzMzODI0NDQ=.html",
+      "capturedAt": "2026-06-13T06:10:21.275Z",
+      "error": "page.goto: Timeout 90000ms exceeded.\nCall log:\n\u001b[2m  - navigating to \"https://www.zcool.com.cn/work/ZNzMzODI0NDQ=.html\", waiting until \"domcontentloaded\"\u001b[22m\n"
+    },
+    {
+      "caseId": "ZNzMzOTA1ODQ=",
+      "title": "高邮咸鸭蛋 I 电商详情页 I 食品农特产 I 详情排版_八月春风-站酷ZCOOL",
+      "sourceUrl": "https://www.zcool.com.cn/work/ZNzMzOTA1ODQ=.html",
+      "imageCount": 195,
+      "largeImageCount": 18,
+      "largestImages": [
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 2026,
+          "alt": "高邮咸鸭蛋 I 电商详情页 I 食品农特产 I 详情排版（图ZNDA0ODg2MjUy） - 品牌 - 站酷设计师八月春风原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 1994,
+          "alt": "高邮咸鸭蛋 I 电商详情页 I 食品农特产 I 详情排版（图ZNDA0ODg2MDI4） - 品牌 - 站酷设计师八月春风原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 1987,
+          "alt": "高邮咸鸭蛋 I 电商详情页 I 食品农特产 I 详情排版（图ZNDA0ODg2MTc2） - 品牌 - 站酷设计师八月春风原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 1881,
+          "alt": "高邮咸鸭蛋 I 电商详情页 I 食品农特产 I 详情排版（图ZNDA0ODg2MjY0） - 品牌 - 站酷设计师八月春风原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 1870,
+          "alt": "高邮咸鸭蛋 I 电商详情页 I 食品农特产 I 详情排版（图ZNDA0ODg2MzAw） - 品牌 - 站酷设计师八月春风原创素材 - 站酷ZCOOL"
+        },
+        {
+          "naturalWidth": 1280,
+          "naturalHeight": 1744,
+          "alt": "高邮咸鸭蛋 I 电商详情页 I 食品农特产 I 详情排版（图ZNDA0ODg2MzA0） - 品牌 - 站酷设计师八月春风原创素材 - 站酷ZCOOL"
+        }
+      ],
+      "inferred": {
+        "category": "食品饮品",
+        "style": "品牌高级感",
+        "structureSignals": [
+          "以少量长图或分段海报承载详情节奏。",
+          "页面更接近海报式分屏，单屏主题要更聚焦。",
+          "站酷案例通常用大面积场景图建立调性，再用局部特写、信息块和参数区完成购买理由。"
+        ],
+        "transferableRules": [
+          "第一屏先回答“这是什么、适合谁、为什么值得点开”，商品主体必须最大且最清楚。",
+          "每张主图只承担一个转化任务：点击、核心功能证明、场景代入、细节信任、决策收尾。",
+          "详情页要先给核心主张，再讲痛点/场景，再拆功能结构，最后给规格和选择建议。",
+          "文字要短、准、大层级，手机端先读标题，再读副标题，细节标注只服务证明点。",
+          "全案共享色彩、光线、字体和图形语言，不能每屏换一种海报风格。"
+        ]
+      }
+    }
+  ],
+  "ecommerceDesignRules": [
+    "完整详情页长图要像销售话术一样排序：先立商品价值，再回答顾虑，再证明卖点，最后降低选择成本。",
+    "主视觉首屏要用大产品和强标题建立点击后停留，不能第一屏就塞满小字参数。",
+    "功能/结构型产品必须安排局部放大、操作动作或场景证据，文字只是解释，画面才是证明。",
+    "详情页中段要有一屏专门做细节信任：材质、结构、图案、屏幕、开口、接口等按产品类型选择。",
+    "参数/选择建议只能基于已提供信息，不能编容量、材质、认证、检测数据。",
+    "服饰类用穿着场景、面料近景和版型/细节拆解建立信任，文字克制。",
+    "食品类用真实食材质感、开袋/食用场景和信任信息建立转化，避免空泛高级感。",
+    "杯壶水具要围绕杯盖、杯口、杯身图案、携带/书包/桌面场景建立购买理由。",
+    "第一屏先回答“这是什么、适合谁、为什么值得点开”，商品主体必须最大且最清楚。",
+    "每张主图只承担一个转化任务：点击、核心功能证明、场景代入、细节信任、决策收尾。",
+    "详情页要先给核心主张，再讲痛点/场景，再拆功能结构，最后给规格和选择建议。",
+    "文字要短、准、大层级，手机端先读标题，再读副标题，细节标注只服务证明点。",
+    "全案共享色彩、光线、字体和图形语言，不能每屏换一种海报风格。",
+    "智能/功能型产品要用近景屏幕、操作动作、使用前后情境证明功能，避免只做氛围图。"
+  ]
+}

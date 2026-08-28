@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "counting": "non_whitespace_characters",
+  "required_files": {
+    "AGENTS.md": 5000,
+    "docs/handoff/README.md": 1200,
+    "docs/handoff/CURRENT_STATUS.md": 3000,
+    "docs/handoff/PRODUCT_RULES.md": 4000,
+    "docs/handoff/DECISIONS.md": 5000,
+    "docs/handoff/CODE_MAP.md": 5000,
+    "docs/handoff/GENERATION_PIPELINE.md": 5000,
+    "docs/handoff/WEB_APP.md": 5000,
+    "docs/handoff/MODEL_PROVIDERS.md": 5000
+  },
+  "default_read_set": [
+    "AGENTS.md",
+    "docs/handoff/README.md",
+    "docs/handoff/CURRENT_STATUS.md"
+  ],
+  "topic_routes": {
+    "generation": "docs/handoff/GENERATION_PIPELINE.md",
+    "web": "docs/handoff/WEB_APP.md",
+    "providers": "docs/handoff/MODEL_PROVIDERS.md"
+  }
+}
