@@ -18,6 +18,8 @@ import {
   Trash2,
   UploadCloud,
   X,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import { cachePromptSnapshot, promptSnapshotFromTask, readCachedPromptSnapshot } from "./prompt-cache.js";
 
@@ -26,9 +28,14 @@ const briefPlaceholder = "请输入卖点";
 const statusCopy = {
   idle: "等待素材",
   ready: "准备生成",
+  receiving: "接收素材",
   submitting: "正在提交",
   queued: "已提交",
   running: "生成中",
+  canceling: "取消中",
+  cancelled: "已取消",
+  interrupted: "已中断",
+  partial: "部分完成",
   done: "生成完成",
   failed: "生成失败",
 };
@@ -171,10 +178,13 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
   const [expansionJob, setExpansionJob] = useState(null);
   const [expandedDraft, setExpandedDraft] = useState("");
   const [expansionError, setExpansionError] = useState("");
+  const [accessTokenValue, setAccessTokenValue] = useState(() => readInternalAccessToken());
+  const [accessMode, setAccessMode] = useState("off");
+  const pendingIdempotencyKey = useRef("");
 
   const hasProductName = Boolean(productForm.productName.trim());
   const hasBriefInput = Boolean(briefText.trim() || hasProductName);
-  const isBusy = ["submitting", "queued", "running"].includes(runState);
+  const isBusy = ["receiving", "submitting", "queued", "running", "canceling"].includes(runState);
   const canGenerate = referenceImages.length > 0 && hasProductName && !isBusy;
   const currentStatus = runState === "idle" && referenceImages.length > 0 && hasBriefInput ? "ready" : runState;
   const isExpandingBrief = ["queued", "running"].includes(expansionJob?.status);
@@ -212,6 +222,9 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
     handleRefreshOutputs();
     handleRefreshExamples();
     handleRefreshTasks();
+    fetchJson("/health")
+      .then((health) => setAccessMode(health.accessMode === "token" ? "token" : "off"))
+      .catch(() => setAccessMode("off"));
   }, []);
 
   useEffect(() => {
@@ -221,7 +234,7 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
   }, [toastMessage]);
 
   useEffect(() => {
-    if (!job?.id || !["submitting", "queued", "running"].includes(runState)) return undefined;
+    if (!job?.id || !["receiving", "submitting", "queued", "running", "canceling"].includes(runState)) return undefined;
     const timer = window.setInterval(async () => {
       try {
         const nextJob = await fetchJson(`/api/jobs/${encodeURIComponent(job.id)}`);
@@ -241,7 +254,7 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
           await handleRefreshOutputs("作品已生成，可以在已完成作品里查看。");
           await handleRefreshTasks({ silent: true });
         }
-        if (nextJob.status === "failed") window.clearInterval(timer);
+        if (["failed", "cancelled", "interrupted"].includes(nextJob.status)) window.clearInterval(timer);
       } catch (pollError) {
         setError(pollError.message);
       }
@@ -637,15 +650,41 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
       form.append("suiteRatio", productForm.suiteRatio);
       form.append("briefFocus", briefText.trim());
       form.append("expandBrief", briefSource === "ai-expanded" ? "false" : "true");
-      const created = await fetchJson("/api/jobs", { method: "POST", body: form });
+      const idempotencyKey = pendingIdempotencyKey.current || createIdempotencyKey();
+      pendingIdempotencyKey.current = idempotencyKey;
+      const created = await fetchJson("/api/jobs", { method: "POST", headers: { "X-Idempotency-Key": idempotencyKey }, body: form });
+      pendingIdempotencyKey.current = "";
       cachePromptSnapshot(created);
       setJob(created);
       setRunState(created.status);
       await handleRefreshTasks({ silent: true });
     } catch (submitError) {
+      if (submitError.statusCode && submitError.statusCode !== 0) pendingIdempotencyKey.current = "";
       setRunState("failed");
       setError(submitError.message);
     }
+  }
+
+  async function handleCancelJob() {
+    if (!job?.id || !isBusy || runState === "canceling") return;
+    if (!window.confirm("确定停止当前任务吗？已经生成的图片会保留。")) return;
+    setError("");
+    setRunState("canceling");
+    try {
+      const cancelled = await fetchJson(`/api/jobs/${encodeURIComponent(job.id)}/cancel`, { method: "POST" });
+      setJob(cancelled);
+      setRunState(cancelled.status || "cancelled");
+      await handleRefreshTasks({ silent: true });
+      await handleRefreshOutputs("任务已停止，已完成图片仍然保留。" );
+    } catch (cancelError) {
+      setError(`取消失败：${cancelError.message}`);
+      await handleRefreshTasks({ silent: true });
+    }
+  }
+
+  function handleAccessTokenChange(value) {
+    setAccessTokenValue(value);
+    writeInternalAccessToken(value);
   }
 
   const finishedProduct = job?.output?.id || job?.outputId || job?.outputFolderName || job?.productName;
@@ -718,6 +757,25 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
                 {isBusy ? "生成中" : "立即生成"}
                 <ArrowRight size={18} />
               </button>
+              {accessMode === "token" ? (
+                <label className="access-token-field">
+                  <span>内部访问令牌</span>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={accessTokenValue}
+                    placeholder="局域网提交任务时填写"
+                    onChange={(event) => handleAccessTokenChange(event.target.value)}
+                  />
+                  <small>仅保存在当前浏览器会话，不会写入任务或项目文件。</small>
+                </label>
+              ) : null}
+              {isBusy ? (
+                <button className="danger-button compact-cancel-button" type="button" disabled={runState === "canceling"} onClick={handleCancelJob}>
+                  {runState === "canceling" ? <Loader2 size={18} className="spin" /> : <X size={18} />}
+                  {runState === "canceling" ? "正在停止任务" : "停止当前任务"}
+                </button>
+              ) : null}
               <button
                 className="secondary-button"
                 type="button"
@@ -1113,10 +1171,18 @@ function HistoryRecordsModal({
 
 function ReferenceManagerModal({ images, limit, onAddFiles, onRemove, onUpdate, onMove, onClose }) {
   const canAddMore = images.length < limit;
+  const [previewId, setPreviewId] = useState(null);
+  const previewIndex = images.findIndex((image) => image.id === previewId);
+  const previewImage = previewIndex >= 0 ? images[previewIndex] : null;
+
+  useEffect(() => {
+    if (previewId && previewIndex < 0) setPreviewId(null);
+  }, [previewId, previewIndex]);
 
   return (
-    <div className="modal-layer" role="dialog" aria-modal="true" aria-label="参考图管理">
-      <section className="reference-modal">
+    <>
+      <div className="modal-layer" role="dialog" aria-modal="true" aria-label="参考图管理">
+        <section className="reference-modal">
         <header className="modal-header">
           <div>
             <p className="eyebrow">上传参考图</p>
@@ -1153,7 +1219,16 @@ function ReferenceManagerModal({ images, limit, onAddFiles, onRemove, onUpdate, 
             {images.map((image, index) => (
               <article className="reference-item" key={image.id}>
                 <div className="reference-preview">
-                  <img src={image.previewUrl} alt={`${image.originalName} 预览`} />
+                  <button
+                    className="reference-image-open"
+                    type="button"
+                    onClick={() => setPreviewId(image.id)}
+                    aria-label={`查看参考图${index + 1}：${image.originalName}`}
+                    title={`点击查看大图：${image.originalName}`}
+                  >
+                    <img src={image.previewUrl} alt={`${image.originalName} 预览`} />
+                    <em><Eye size={15} /> 点击查看</em>
+                  </button>
                   <span>参考图{index + 1}</span>
                   {image.role === "主参考图" ? <strong className="reference-role-badge">主参考图</strong> : null}
                   <button
@@ -1233,9 +1308,108 @@ function ReferenceManagerModal({ images, limit, onAddFiles, onRemove, onUpdate, 
             完成
           </button>
         </footer>
+        </section>
+      </div>
+      {previewImage ? (
+        <ReferenceImagePreviewModal
+          image={previewImage}
+          index={previewIndex}
+          total={images.length}
+          onClose={() => setPreviewId(null)}
+          onPrevious={() => setPreviewId(images[(previewIndex - 1 + images.length) % images.length].id)}
+          onNext={() => setPreviewId(images[(previewIndex + 1) % images.length].id)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function ReferenceImagePreviewModal({ image, index, total, onClose, onPrevious, onNext }) {
+  const [zoom, setZoom] = useState(1);
+  const [dimensions, setDimensions] = useState(null);
+
+  useEffect(() => {
+    setZoom(1);
+    setDimensions(null);
+  }, [image.id]);
+
+  useEffect(() => {
+    function handleKeyDown(event) {
+      if (event.key === "Escape") onClose();
+      if (event.key === "ArrowLeft" && total > 1) onPrevious();
+      if (event.key === "ArrowRight" && total > 1) onNext();
+      if (["+", "="].includes(event.key)) setZoom((value) => clampZoom(value + 0.2));
+      if (event.key === "-") setZoom((value) => clampZoom(value - 0.2));
+      if (event.key === "0") setZoom(1);
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose, onPrevious, onNext, total]);
+
+  return (
+    <div
+      className="modal-layer reference-lightbox-layer"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`查看参考图：${image.originalName}`}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section className="reference-lightbox">
+        <header className="modal-header reference-lightbox-header">
+          <div className="reference-lightbox-title">
+            <p className="eyebrow">参考图 {index + 1} / {total}</p>
+            <h2 title={image.originalName}>{image.originalName}</h2>
+          </div>
+          <div className="reference-zoom-tools" aria-label="图片缩放控制">
+            <button type="button" onClick={() => setZoom((value) => clampZoom(value - 0.2))} aria-label="缩小图片"><ZoomOut size={17} /></button>
+            <button type="button" onClick={() => setZoom(1)} title="适应窗口">{Math.round(zoom * 100)}%</button>
+            <button type="button" onClick={() => setZoom((value) => clampZoom(value + 0.2))} aria-label="放大图片"><ZoomIn size={17} /></button>
+            <button className="icon-button" type="button" onClick={onClose} aria-label="关闭预览" autoFocus><X size={18} /></button>
+          </div>
+        </header>
+        <div
+          className="reference-lightbox-stage"
+          onWheel={(event) => {
+            event.preventDefault();
+            setZoom((value) => clampZoom(value + (event.deltaY < 0 ? 0.15 : -0.15)));
+          }}
+        >
+          {total > 1 ? (
+            <button className="preview-nav left" type="button" onClick={onPrevious} aria-label="上一张参考图"><ArrowLeft size={22} /></button>
+          ) : null}
+          <img
+            src={image.previewUrl}
+            alt={image.originalName}
+            style={{ "--reference-preview-zoom": zoom }}
+            onLoad={(event) => setDimensions({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
+          />
+          {total > 1 ? (
+            <button className="preview-nav right" type="button" onClick={onNext} aria-label="下一张参考图"><ArrowRight size={22} /></button>
+          ) : null}
+        </div>
+        <footer className="reference-lightbox-meta">
+          <div><span>完整文件名</span><strong>{image.originalName}</strong></div>
+          <div><span>图片尺寸</span><strong>{dimensions ? `${dimensions.width} × ${dimensions.height} px` : "读取中…"}</strong></div>
+          <div><span>文件大小</span><strong>{formatFileSize(image.file?.size)}</strong></div>
+          <small>滚轮缩放 · ← → 切换 · Esc 关闭 · 数字 0 适应窗口</small>
+        </footer>
       </section>
     </div>
   );
+}
+
+function clampZoom(value) {
+  return Math.min(3, Math.max(0.5, Math.round(value * 100) / 100));
+}
+
+function formatFileSize(bytes) {
+  const value = Number(bytes || 0);
+  if (!value) return "0 B";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 ** 2)).toFixed(2)} MB`;
 }
 
 function BriefExpansionModal({
@@ -1422,7 +1596,7 @@ function ShowcasePanel({
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [exampleBusyId, setExampleBusyId] = useState("");
   const [exampleError, setExampleError] = useState("");
-  const isBusy = ["submitting", "queued", "running"].includes(runState);
+  const isBusy = ["receiving", "submitting", "queued", "running", "canceling"].includes(runState);
   const isDone = ["done", "partial"].includes(runState) && Boolean(job?.productName);
   const displayMode = isBusy ? "task" : mode === "completed" && !outputs.length ? "examples" : mode;
 
@@ -2260,8 +2434,8 @@ function formatBriefDiagnostic(diagnostics, fallbackReason) {
 
 function historyStatus(task, output) {
   if (task?.filesDeletedAt && !output) return "deleted";
-  if (["submitting", "queued", "running"].includes(task?.status)) return task.status;
-  if (task?.status === "failed") return "failed";
+  if (["receiving", "submitting", "queued", "running", "canceling"].includes(task?.status)) return task.status;
+  if (["failed", "cancelled", "interrupted"].includes(task?.status)) return task.status;
   const outputStatus = String(output?.status || task?.output?.status || "");
   if (outputStatus === "部分失败") return "partial";
   if (outputStatus === "已完成") return "done";
@@ -2277,16 +2451,16 @@ function historyStatusLabel(status, output) {
 }
 
 function historyStatusBucket(status) {
-  if (["submitting", "queued", "running"].includes(status)) return "active";
+  if (["receiving", "submitting", "queued", "running", "canceling"].includes(status)) return "active";
   if (status === "done") return "done";
   if (status === "partial") return "partial";
-  if (status === "failed") return "failed";
+  if (["failed", "cancelled", "interrupted"].includes(status)) return "failed";
   if (status === "deleted") return "deleted";
   return "failed";
 }
 
 function isProblemHistoryStatus(status) {
-  return ["failed", "partial", "deleted", "unknown"].includes(status);
+  return ["failed", "cancelled", "interrupted", "partial", "deleted", "unknown"].includes(status);
 }
 
 function historyRecordSearchText(record) {
@@ -2367,7 +2541,7 @@ function Header({ currentStatus }) {
         <h1>本地商品图工作台</h1>
       </div>
       <div className={`status-pill status-${currentStatus}`}>
-        {["submitting", "queued", "running"].includes(currentStatus) ? <Loader2 size={16} className="spin" /> : <CheckCircle2 size={16} />}
+        {["receiving", "submitting", "queued", "running", "canceling"].includes(currentStatus) ? <Loader2 size={16} className="spin" /> : <CheckCircle2 size={16} />}
         {statusCopy[currentStatus] || currentStatus}
       </div>
     </header>
@@ -2412,12 +2586,49 @@ function normalizeUiLanguage(value) {
 
 async function fetchJson(url, options) {
   let response;
+  const requestOptions = { ...(options || {}) };
+  const headers = new Headers(requestOptions.headers);
+  const accessToken = readInternalAccessToken();
+  if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
+  requestOptions.headers = headers;
   try {
-    response = await fetch(url, options);
+    response = await fetch(url, requestOptions);
   } catch (error) {
-    throw new Error("本地后端服务未连接（8787）。请重新双击“一键启动项目.bat”，并保持启动窗口运行。", { cause: error });
+    const networkError = new Error("本地后端服务未连接（8787）。请重新双击“一键启动项目.bat”，并保持启动窗口运行。", { cause: error });
+    networkError.statusCode = 0;
+    throw networkError;
   }
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `请求失败：${response.status}`);
+  if (!response.ok) {
+    const apiError = new Error(data.error || `请求失败：${response.status}`);
+    apiError.statusCode = response.status;
+    apiError.code = data.code || "";
+    apiError.activeJobId = data.activeJobId || "";
+    apiError.activePhase = data.activePhase || "";
+    throw apiError;
+  }
   return data;
+}
+
+const internalAccessTokenKey = "bge-local-web-access-token";
+
+function readInternalAccessToken() {
+  try {
+    return window.sessionStorage.getItem(internalAccessTokenKey) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writeInternalAccessToken(value) {
+  try {
+    const clean = String(value || "").trim();
+    if (clean) window.sessionStorage.setItem(internalAccessTokenKey, clean);
+    else window.sessionStorage.removeItem(internalAccessTokenKey);
+  } catch {}
+}
+
+function createIdempotencyKey() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}-${Math.random().toString(16).slice(2)}`;
 }

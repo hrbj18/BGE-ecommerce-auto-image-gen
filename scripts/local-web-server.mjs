@@ -2,7 +2,6 @@ import { createReadStream, existsSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
-import { Readable } from "node:stream";
 import { spawn } from "node:child_process";
 import { selectGenerationRule } from "./generation-rule-loader.mjs";
 import {
@@ -17,20 +16,42 @@ import {
 import { inferCategoryFromSource } from "./category-inference.mjs";
 import { parseNativeProgressLines } from "./generation-progress.mjs";
 import { createPnpmCommand } from "./runtime-commands.mjs";
+import { SubmissionGate, normalizeIdempotencyKey } from "./local-web-admission.mjs";
+import { authorizeWriteRequest, corsOriginForRequest, normalizeAccessMode } from "./local-web-access.mjs";
+import { createOnceAsyncFinalizer, terminateProcessTree } from "./local-web-process-manager.mjs";
+import { inspectDiskSpace, minimumFreeBytes, requireDiskSpace } from "./local-web-storage.mjs";
+import { AtomicJsonStore } from "./local-web-task-store.mjs";
+import {
+  findLocalWebHttpError,
+  parseMultipartForm,
+  readUploadLimits,
+  validateBriefInputs,
+  validateReferenceImages,
+} from "./local-web-upload-policy.mjs";
 
 const rootDir = process.cwd();
-const inputRoot = path.join(rootDir, "待作图");
-const outputRoot = path.join(rootDir, "已完成");
+loadDotEnv(path.join(rootDir, ".env"));
+const inputRoot = configuredPath("LOCAL_WEB_INPUT_ROOT", path.join(rootDir, "待作图"));
+const outputRoot = configuredPath("LOCAL_WEB_OUTPUT_ROOT", path.join(rootDir, "已完成"));
 const exampleRoot = path.join(rootDir, "优秀案例");
-const localStateRoot = path.join(rootDir, ".local-web");
+const localStateRoot = configuredPath("LOCAL_WEB_STATE_ROOT", path.join(rootDir, ".local-web"));
 const taskRoot = path.join(localStateRoot, "tasks");
 const taskStorePath = path.join(taskRoot, "tasks.json");
 const taskMetadataFilename = "任务信息.json";
 const port = Number(process.env.LOCAL_WEB_PORT || 8787);
 const jobs = new Map();
 const briefExpansionJobs = new Map();
+const submissionGate = new SubmissionGate();
+const taskStore = new AtomicJsonStore(taskStorePath);
+const uploadLimits = readUploadLimits();
+const accessMode = normalizeAccessMode(process.env.LOCAL_WEB_ACCESS_MODE);
+const accessToken = String(process.env.LOCAL_WEB_ACCESS_TOKEN || "").trim();
+const allowedOrigins = String(process.env.LOCAL_WEB_ALLOWED_ORIGINS || "").trim();
 let activeJobId = null;
 let taskPersistTimer = null;
+let currentWorkflow = null;
+let shuttingDown = false;
+let lastDiskStatus = null;
 
 const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
 const promptFileExtensions = new Set([".md", ".txt"]);
@@ -83,7 +104,6 @@ const knownBriefHeadings = new Set([
   "要求",
 ]);
 
-loadDotEnv();
 await fs.mkdir(inputRoot, { recursive: true });
 await fs.mkdir(outputRoot, { recursive: true });
 await fs.mkdir(exampleRoot, { recursive: true });
@@ -93,16 +113,34 @@ await loadPersistedTasks();
 
 const server = http.createServer(async (req, res) => {
   try {
+    applyCors(req, res);
     if (req.method === "OPTIONS") return sendNoContent(res);
-    setCors(res);
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    if (shuttingDown && req.method !== "GET") return sendJson(res, 503, { error: "服务正在安全关闭，请稍后重试。", code: "SERVER_SHUTTING_DOWN" });
+    if (isProtectedWriteRequest(req, url)) {
+      const authorization = authorizeWriteRequest(req, accessToken, accessMode);
+      if (!authorization.ok) return sendJson(res, authorization.statusCode || 401, { error: authorization.message, code: authorization.code });
+    }
     if (req.method === "GET" && url.pathname === "/health") {
+      lastDiskStatus = await inspectDiskSpace([inputRoot, outputRoot], { minimumBytes: minimumFreeBytes() }).catch(() => null);
+      const active = submissionGate.snapshot();
+      const serviceState = lastDiskStatus && !lastDiskStatus.ok ? "degraded" : active ? "busy" : "ready";
       return sendJson(res, 200, {
         status: "ok",
+        state: serviceState,
         service: "local-web-api",
+        accessMode,
         port,
         uptimeSeconds: Math.floor(process.uptime()),
-        activeJobs: jobs.size,
+        activeJobs: active ? 1 : 0,
+        activeJobId: active?.jobId || null,
+        activePhase: active?.phase || "idle",
+        acceptingJobs: serviceState === "ready",
+        disk: lastDiskStatus ? {
+          ok: lastDiskStatus.ok,
+          availableGiB: lastDiskStatus.availableGiB,
+          minimumGiB: lastDiskStatus.minimumGiB,
+        } : { ok: false, availableGiB: null, minimumGiB: Math.round(minimumFreeBytes() / (1024 ** 3)) },
       });
     }
     if (req.method === "POST" && url.pathname === "/api/jobs") {
@@ -110,6 +148,7 @@ const server = http.createServer(async (req, res) => {
       console.log(`[api/jobs] submission received at ${new Date().toISOString()} client=${client.address} host=${client.host}`);
       return handleCreateJob(req, res);
     }
+    if (req.method === "POST" && /^\/api\/jobs\/[^/]+\/cancel$/.test(url.pathname)) return await handleCancelJob(url, res);
     if (req.method === "GET" && url.pathname.startsWith("/api/jobs/")) return handleGetJob(url, res);
     if (req.method === "GET" && url.pathname === "/api/tasks") return await handleListTasks(res);
     if (req.method === "GET" && url.pathname.startsWith("/api/tasks/")) return await handleGetTask(url, res);
@@ -128,7 +167,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname.startsWith("/outputs/")) return handleOutputFile(url, res);
     sendJson(res, 404, { error: "Not found" });
   } catch (error) {
-    sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    sendKnownError(res, error);
   }
 });
 
@@ -142,7 +181,51 @@ server.on("error", (error) => {
 
 server.listen(port, "0.0.0.0", () => {
   console.log(`Local ecommerce API listening on http://0.0.0.0:${port}`);
+  if (accessMode === "off") console.warn("内部访问令牌当前已封存：局域网设备可直接创建、取消或删除任务。");
+  if (accessMode === "token" && !accessToken) console.warn("LOCAL_WEB_ACCESS_MODE=token 但未配置令牌：只有本机回环地址可以执行写操作。");
 });
+
+let shutdownPromise = null;
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => {
+    if (!shutdownPromise) shutdownPromise = gracefulShutdown(signal);
+  });
+}
+
+async function gracefulShutdown(signal) {
+  shuttingDown = true;
+  console.log(`[local-web-server] graceful shutdown requested: ${signal}`);
+  server.close();
+  const workflow = currentWorkflow;
+  if (workflow) {
+    workflow.cancelRequested = true;
+    const job = jobs.get(workflow.jobId);
+    if (job) {
+      job.status = "canceling";
+      job.message = "服务正在关闭，工作流将停止并保留已完成图片。";
+      addJobEvent(job, "shutdown-canceling", job.message, { signal });
+    }
+    await terminateProcessTree(workflow.child).catch(() => undefined);
+    await workflow.finalize?.({ kind: "cancel", code: workflow.child.exitCode });
+  } else {
+    const active = submissionGate.snapshot();
+    const job = active ? jobs.get(active.jobId) : null;
+    if (job && ["receiving", "submitting", "queued"].includes(job.status)) {
+      job.status = "interrupted";
+      job.message = "服务在任务启动前关闭，请重新提交。";
+      addJobEvent(job, "interrupted", job.message, { signal });
+      submissionGate.release(active.token);
+      activeJobId = null;
+    }
+  }
+  if (taskPersistTimer) {
+    clearTimeout(taskPersistTimer);
+    taskPersistTimer = null;
+  }
+  await persistTasks().catch(() => undefined);
+  await taskStore.flush().catch(() => undefined);
+  process.exit(0);
+}
 
 function getRequestClient(req) {
   const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
@@ -172,22 +255,25 @@ function loadDotEnv(filePath = path.join(rootDir, ".env"), options = {}) {
 }
 
 async function loadPersistedTasks() {
-  const store = await readJson(taskStorePath);
+  const loaded = await taskStore.load();
+  const store = loaded.value;
+  if (loaded.recovered) console.warn("任务主状态文件无法读取，已从 tasks.json.bak 恢复最近有效记录。");
   const tasks = Array.isArray(store?.tasks) ? store.tasks : [];
   let changed = false;
   for (const item of tasks) {
     if (!item?.id) continue;
     const job = normalizePersistedJob(item);
-    if (["queued", "running", "submitting"].includes(job.status)) {
-      job.status = "failed";
+    if (["receiving", "queued", "running", "submitting", "canceling"].includes(job.status)) {
+      job.status = "interrupted";
       job.message = "服务曾经重启，这个任务没有可恢复的运行进程，请重新生成。";
       job.updatedAt = new Date().toISOString();
       addJobEvent(job, "interrupted", "服务重启后恢复任务记录，但运行进程已中断。");
       changed = true;
     }
     jobs.set(job.id, job);
+    if (job.idempotencyKey) submissionGate.remember(job.idempotencyKey, job.id);
   }
-  if (changed) await persistTasks();
+  if (changed || loaded.recovered) await persistTasks();
 }
 
 function normalizePersistedJob(item) {
@@ -225,6 +311,7 @@ function normalizePersistedJob(item) {
           userAgent: text(item.submissionClient.userAgent),
         }
       : null,
+    idempotencyKey: text(item.idempotencyKey),
     commonRuleProfile: text(item.commonRuleProfile),
     commonRuleName: text(item.commonRuleName),
     commonRuleFile: text(item.commonRuleFile),
@@ -438,6 +525,7 @@ async function persistTasks() {
         referenceCount: job.referenceCount || 0,
         referenceNames: job.referenceNames || [],
         submissionClient: job.submissionClient || null,
+        idempotencyKey: job.idempotencyKey || "",
         briefSource: job.briefSource || "",
         briefFallbackReason: job.briefFallbackReason || "",
         briefPreview: job.briefPreview || "",
@@ -489,7 +577,7 @@ async function persistTasks() {
       })),
   };
   await fs.mkdir(taskRoot, { recursive: true });
-  await fs.writeFile(taskStorePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  await taskStore.save(payload);
 }
 
 function trimLog(value, maxLength = 120_000) {
@@ -631,93 +719,137 @@ function normalizeOutputLanguage(value) {
 }
 
 async function handleCreateJob(req, res) {
-  if (activeJobId) {
-    return sendJson(res, 409, { error: "当前已有任务在运行，请等待完成后再提交。", activeJobId });
-  }
-
   const submissionClient = getRequestClient(req);
-  const request = new Request(`http://localhost${req.url}`, {
-    method: req.method,
-    headers: req.headers,
-    body: Readable.toWeb(req),
-    duplex: "half",
-  });
-  const form = await request.formData();
-  const references = form.getAll("referenceImages").filter((item) => item && typeof item === "object");
-  const template = form.get("template");
-  const briefText = text(form.get("briefText"));
-  const briefFocus = text(form.get("briefFocus")) || briefText;
-  const submittedProductName = text(form.get("productName"));
-  const submittedTargetPlatform = normalizeTargetPlatform(text(form.get("targetPlatform")));
-  const submittedOutputLanguage = normalizeOutputLanguage(text(form.get("outputLanguage")));
-  const suiteRatio = text(form.get("suiteRatio")) || fixedSuiteRatio;
-  const shouldExpandBrief = text(form.get("expandBrief")) !== "false";
-  if (!references.length) return sendJson(res, 400, { error: "请至少上传一张参考图。" });
-  if ((!template || typeof template !== "object") && !briefFocus && !submittedProductName) {
-    return sendJson(res, 400, { error: "请填写产品名称、上传需求模板，或在文本框里输入作图重点。" });
-  }
-
-  const templateText = template && typeof template === "object" ? await template.text() : "";
-  const templateName = template && typeof template === "object" ? template.name : "";
-  const referenceNames = references.map((file) => file.name).filter(Boolean);
-  const structuredInput = buildStructuredBriefInput({
-    productName: submittedProductName,
-    targetPlatform: submittedTargetPlatform,
-    outputLanguage: submittedOutputLanguage,
-    suiteRatio,
-    briefFocus,
-  });
-  const rawBriefText = [templateText, structuredInput].filter(Boolean).join("\n\n");
-  const generationRule = await selectGenerationRule(rootDir, [
-    rawBriefText,
-    templateName,
-    referenceNames.join("\n")
-  ].filter(Boolean).join("\n\n"), {
-    targetPlatform: submittedTargetPlatform,
-    outputLanguage: submittedOutputLanguage,
-  });
-  const fallbackProductName =
-    submittedProductName ||
-    inferProductName({ rawBriefText, referenceNames }) ||
-    (templateName ? stripExtension(templateName) : "") ||
-    `前端任务-${Date.now()}`;
-  const expansionResult = shouldExpandBrief
-    ? await withTimeout(
-        expandDemandBrief(rawBriefText, {
-          fallbackProductName,
-          referenceNames,
-          generationRule,
-        }),
-        briefSubmitTimeoutMs(),
-        "brief expansion timeout",
-      ).catch((error) => createBriefFallbackResult({
-        fallback: defaultDemandBrief({ productName: fallbackProductName, rawBriefText, referenceNames, generationRule }),
-        source: "safe-fallback",
-        reasonCode: "submit_timeout",
-        reasonMessage: "提交任务时文本模型处理超时，已使用本地智能模板。",
-        error,
-      }))
-    : {
-      text: rawBriefText,
-      source: "user-confirmed",
-      fallbackReason: "",
-      diagnostics: createBriefDiagnostics({ source: "user-confirmed", status: "user-confirmed" }),
-    };
-  const expandedBrief = typeof expansionResult === "string"
-    ? expansionResult
-    : String(expansionResult?.text || "").trim();
-  const productName = safeSegment(inferProductName({
-    rawBriefText: expandedBrief,
-    productName: fallbackProductName,
-    referenceNames,
-  }));
   const createdAt = new Date().toISOString();
   const jobId = createTaskId(createdAt);
+  let idempotencyKey;
+  try {
+    idempotencyKey = normalizeIdempotencyKey(req.headers["x-idempotency-key"] || jobId);
+  } catch (error) {
+    return sendKnownError(res, error);
+  }
+  const admission = submissionGate.begin({ jobId, idempotencyKey, phase: "receiving" });
+  if (admission.kind === "duplicate") {
+    const existing = jobs.get(admission.jobId);
+    if (existing) return sendJson(res, 202, existing);
+    submissionGate.forget(idempotencyKey);
+    return sendJson(res, 409, { error: "重复请求记录已过期，请重新点击生成。", code: "IDEMPOTENCY_RECORD_EXPIRED" });
+  }
+  if (admission.kind === "busy") {
+    return sendJson(res, 409, {
+      error: "当前已有任务在运行，请等待完成后再提交。",
+      code: "ACTIVE_JOB_EXISTS",
+      activeJobId: admission.active?.jobId || activeJobId,
+      activePhase: admission.active?.phase || "running",
+      retryAfterSeconds: 15,
+    });
+  }
+
+  const lease = admission.lease;
+  activeJobId = jobId;
+  const job = createSubmittingJob({ jobId, createdAt, idempotencyKey, submissionClient });
+  jobs.set(jobId, job);
+  await persistTasks().catch(async (error) => {
+    jobs.delete(jobId);
+    submissionGate.release(lease.token);
+    activeJobId = submissionGate.snapshot()?.jobId || null;
+    throw error;
+  });
+
+  let stagingMaterialDir = "";
+  let materialDir = "";
+  let outputDir = "";
+  try {
+    const form = await parseMultipartForm(req, uploadLimits);
+    ensureSubmissionNotCancelled(job);
+    const references = form.getAll("referenceImages").filter((item) => item && typeof item === "object");
+    const template = form.get("template");
+    const briefText = text(form.get("briefText"));
+    const briefFocus = text(form.get("briefFocus")) || briefText;
+    const submittedProductName = text(form.get("productName"));
+    const submittedTargetPlatform = normalizeTargetPlatform(text(form.get("targetPlatform")));
+    const submittedOutputLanguage = normalizeOutputLanguage(text(form.get("outputLanguage")));
+    const suiteRatio = text(form.get("suiteRatio")) || fixedSuiteRatio;
+    const shouldExpandBrief = text(form.get("expandBrief")) !== "false";
+    if ((!template || typeof template !== "object") && !briefFocus && !submittedProductName) {
+      const error = new Error("请填写产品名称、上传需求模板，或在文本框里输入作图重点。");
+      error.statusCode = 400;
+      error.code = "BRIEF_REQUIRED";
+      throw error;
+    }
+
+    const templateText = template && typeof template === "object" ? await template.text() : "";
+    validateBriefInputs({ template, templateText, briefText, briefFocus }, uploadLimits);
+    const validatedReferences = await validateReferenceImages(references, uploadLimits);
+    ensureSubmissionNotCancelled(job);
+    lastDiskStatus = await requireDiskSpace([inputRoot, outputRoot], { minimumBytes: minimumFreeBytes() });
+    submissionGate.transition(lease.token, "submitting");
+    job.status = "submitting";
+    job.message = "素材校验通过，正在整理作图需求。";
+    addJobEvent(job, "upload-validated", "参考图、输入大小和磁盘空间检查通过。", {
+      referenceCount: validatedReferences.length,
+      availableGiB: lastDiskStatus.availableGiB,
+    });
+
+    const templateName = template && typeof template === "object" ? template.name : "";
+    const referenceNames = validatedReferences.map((item) => item.file.name).filter(Boolean);
+    const structuredInput = buildStructuredBriefInput({
+      productName: submittedProductName,
+      targetPlatform: submittedTargetPlatform,
+      outputLanguage: submittedOutputLanguage,
+      suiteRatio,
+      briefFocus,
+    });
+    const rawBriefText = [templateText, structuredInput].filter(Boolean).join("\n\n");
+    const generationRule = await selectGenerationRule(rootDir, [
+      rawBriefText,
+      templateName,
+      referenceNames.join("\n")
+    ].filter(Boolean).join("\n\n"), {
+      targetPlatform: submittedTargetPlatform,
+      outputLanguage: submittedOutputLanguage,
+    });
+    const fallbackProductName =
+      submittedProductName ||
+      inferProductName({ rawBriefText, referenceNames }) ||
+      (templateName ? stripExtension(templateName) : "") ||
+      `前端任务-${Date.now()}`;
+    const expansionResult = shouldExpandBrief
+      ? await withTimeout(
+          expandDemandBrief(rawBriefText, {
+            fallbackProductName,
+            referenceNames,
+            generationRule,
+          }),
+          briefSubmitTimeoutMs(),
+          "brief expansion timeout",
+        ).catch((error) => createBriefFallbackResult({
+          fallback: defaultDemandBrief({ productName: fallbackProductName, rawBriefText, referenceNames, generationRule }),
+          source: "safe-fallback",
+          reasonCode: "submit_timeout",
+          reasonMessage: "提交任务时文本模型处理超时，已使用本地智能模板。",
+          error,
+        }))
+      : {
+        text: rawBriefText,
+        source: "user-confirmed",
+        fallbackReason: "",
+        diagnostics: createBriefDiagnostics({ source: "user-confirmed", status: "user-confirmed" }),
+      };
+    const expandedBrief = typeof expansionResult === "string"
+      ? expansionResult
+      : String(expansionResult?.text || "").trim();
+    ensureSubmissionNotCancelled(job);
+    const productName = safeSegment(inferProductName({
+      rawBriefText: expandedBrief,
+      productName: fallbackProductName,
+      referenceNames,
+    }));
   const submittedAtLocal = formatBeijingDateTime(createdAt);
   const taskFolderName = safeSegment(`${jobId}_${productName}`);
-  const materialDir = path.join(inputRoot, taskFolderName);
-  const stagingMaterialDir = path.join(inputRoot, `.staging-${jobId}`);
-  const outputDir = path.join(outputRoot, taskFolderName);
+    materialDir = path.join(inputRoot, taskFolderName);
+    stagingMaterialDir = path.join(inputRoot, `.staging-${jobId}`);
+    outputDir = path.join(outputRoot, taskFolderName);
   const finalBriefText = expandedBrief || defaultDemandBrief({ productName, rawBriefText, referenceNames, generationRule });
   const visibleProductName = extractBriefField(finalBriefText, ["可见展示名", "展示名", "visible product name", "display name"]) || inferVisibleProductName({
     rawBriefText: finalBriefText || rawBriefText,
@@ -725,16 +857,8 @@ async function handleCreateJob(req, res) {
     productImageAnalysis: "",
     outputLanguage: generationRule.outputLanguage,
   });
-  try {
     await resetDirectory(stagingMaterialDir);
     await fs.writeFile(path.join(stagingMaterialDir, "需求模板.md"), finalBriefText);
-  } catch (error) {
-    await fs.rm(stagingMaterialDir, { recursive: true, force: true }).catch(() => {});
-    await fs.rm(outputDir, { recursive: true, force: true }).catch(() => {});
-    return sendJson(res, 500, {
-      error: `Failed to prepare task materials: ${error instanceof Error ? error.message : String(error)}`,
-    });
-  }
 
   const metadata = {
     id: jobId,
@@ -753,6 +877,7 @@ async function handleCreateJob(req, res) {
     suiteRatio,
     briefFocus,
     submissionClient,
+    idempotencyKey,
     briefDiagnostics: expansionResult.diagnostics || null,
     briefFallbackReason: expansionResult.fallbackReason || "",
     commonRuleProfile: generationRule.commonRuleProfile,
@@ -792,47 +917,23 @@ async function handleCreateJob(req, res) {
     templateName,
     referenceNames,
   };
-  try {
     await fs.writeFile(path.join(stagingMaterialDir, taskMetadataFilename), `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
-  } catch (error) {
-    await fs.rm(stagingMaterialDir, { recursive: true, force: true }).catch(() => {});
-    await fs.rm(outputDir, { recursive: true, force: true }).catch(() => {});
-    return sendJson(res, 500, {
-      error: `Failed to save task metadata: ${error instanceof Error ? error.message : String(error)}`,
-    });
-  }
 
   const materialFiles = ["需求模板.md", taskMetadataFilename];
-  try {
-    for (const [index, file] of references.entries()) {
+    for (const [index, reference] of validatedReferences.entries()) {
+      const file = reference.file;
       const extension = imageExtensions.has(path.extname(file.name).toLowerCase())
         ? path.extname(file.name).toLowerCase()
-        : ".png";
+        : reference.extension;
       const filename = safeFilename(file.name) || `参考图${index + 1}${extension}`;
-      await fs.writeFile(path.join(stagingMaterialDir, filename), Buffer.from(await file.arrayBuffer()));
+      await fs.writeFile(path.join(stagingMaterialDir, filename), reference.data);
       materialFiles.push(filename);
     }
-  } catch (error) {
-    await fs.rm(stagingMaterialDir, { recursive: true, force: true }).catch(() => {});
-    await fs.rm(outputDir, { recursive: true, force: true }).catch(() => {});
-    return sendJson(res, 500, {
-      error: `Failed to save task references: ${error instanceof Error ? error.message : String(error)}`,
-    });
-  }
 
   await fs.rm(materialDir, { recursive: true, force: true });
-  try {
     await fs.rename(stagingMaterialDir, materialDir);
-  } catch (error) {
-    await fs.rm(stagingMaterialDir, { recursive: true, force: true }).catch(() => {});
-    await fs.rm(materialDir, { recursive: true, force: true }).catch(() => {});
-    await fs.rm(outputDir, { recursive: true, force: true }).catch(() => {});
-    return sendJson(res, 500, {
-      error: `Failed to finalize task materials: ${error instanceof Error ? error.message : String(error)}`,
-    });
-  }
 
-  const job = {
+    Object.assign(job, {
     id: jobId,
     taskId: jobId,
     kind: "generation",
@@ -858,6 +959,7 @@ async function handleCreateJob(req, res) {
     suiteRatio,
     briefFocus,
     submissionClient,
+    idempotencyKey,
     briefDiagnostics: expansionResult.diagnostics || null,
     briefFallbackReason: expansionResult.fallbackReason || "",
     commonRuleProfile: generationRule.commonRuleProfile,
@@ -884,7 +986,7 @@ async function handleCreateJob(req, res) {
     generationRuleVersion: generationRule.ruleVersion,
     generationRuleReason: generationRule.ruleReason,
     generationRuleMatchedKeywords: generationRule.matchedKeywords,
-    status: "queued",
+      status: "queued",
     message: "任务已提交，等待本地工作流启动。",
     progress: { stage: "planning", message: "任务已提交，正在等待工作流启动。", total: 13, completed: 0, mainCompleted: 0, detailCompleted: 0, retries: 0, backpressureCount: 0, concurrency: 0, updatedAt: createdAt },
     timing: { workflowStartedAt: "", firstPreviewAt: "", firstPreviewElapsedMs: 0 },
@@ -893,8 +995,7 @@ async function handleCreateJob(req, res) {
     submittedAtLocal,
     output: null,
     log: "",
-    events: [],
-  };
+    });
   addJobEvent(job, "queued", "任务已提交，素材和需求模板已保存。", {
     productName,
     referenceCount: references.length,
@@ -904,22 +1005,70 @@ async function handleCreateJob(req, res) {
     generationRuleName: generationRule.ruleName,
     generationRuleReason: generationRule.ruleReason,
   });
-  jobs.set(jobId, job);
-  try {
     await persistTasks();
-  } catch (error) {
-    jobs.delete(jobId);
-    await fs.rm(materialDir, { recursive: true, force: true }).catch(() => {});
-    await fs.rm(stagingMaterialDir, { recursive: true, force: true }).catch(() => {});
-    await fs.rm(outputDir, { recursive: true, force: true }).catch(() => {});
-    return sendJson(res, 500, {
-      error: `Failed to persist task record: ${error instanceof Error ? error.message : String(error)}`,
-    });
-  }
-  activeJobId = jobId;
+    submissionGate.transition(lease.token, "queued");
+    ensureSubmissionNotCancelled(job);
   console.log(`[api/jobs] task queued id=${jobId} product=${productName}`);
-  runWorkflow(job);
-  sendJson(res, 202, job);
+    runWorkflow(job, lease);
+    return sendJson(res, 202, job);
+  } catch (error) {
+    await fs.rm(stagingMaterialDir, { recursive: true, force: true }).catch(() => undefined);
+    await failAcceptedSubmission(job, lease, error);
+    return sendKnownError(res, error, job.id);
+  }
+}
+
+function createSubmittingJob({ jobId, createdAt, idempotencyKey, submissionClient }) {
+  return {
+    id: jobId,
+    taskId: jobId,
+    kind: "generation",
+    productName: "正在接收任务",
+    idempotencyKey,
+    submissionClient,
+    status: "receiving",
+    message: "请求已接收，正在校验上传素材。",
+    progress: { stage: "receiving", message: "正在校验上传素材。", total: 13, completed: 0, mainCompleted: 0, detailCompleted: 0, retries: 0, backpressureCount: 0, concurrency: 0, updatedAt: createdAt },
+    timing: { workflowStartedAt: "", firstPreviewAt: "", firstPreviewElapsedMs: 0 },
+    createdAt,
+    updatedAt: createdAt,
+    submittedAtLocal: formatBeijingDateTime(createdAt),
+    output: null,
+    log: "",
+    events: [],
+  };
+}
+
+async function failAcceptedSubmission(job, lease, error) {
+  const known = findLocalWebHttpError(error) || error;
+  const cancelled = job.cancelRequested || known?.code === "SUBMISSION_CANCELLED";
+  job.status = cancelled ? "cancelled" : "failed";
+  job.errorCode = cancelled ? "SUBMISSION_CANCELLED" : text(known.code) || "SUBMISSION_FAILED";
+  job.message = cancelled ? "任务已取消，没有启动生图工作流。" : error instanceof Error ? error.message : String(error);
+  job.updatedAt = new Date().toISOString();
+  addJobEvent(job, "submission-failed", job.message, { stage: submissionGate.snapshot()?.phase || "receiving", code: job.errorCode });
+  submissionGate.release(lease.token);
+  activeJobId = submissionGate.snapshot()?.jobId || null;
+  await persistTasks().catch((persistError) => console.warn(`保存失败任务记录失败：${persistError instanceof Error ? persistError.message : String(persistError)}`));
+}
+
+function ensureSubmissionNotCancelled(job) {
+  if (!job.cancelRequested) return;
+  const error = new Error("任务已取消，没有启动生图工作流。");
+  error.statusCode = 409;
+  error.code = "SUBMISSION_CANCELLED";
+  throw error;
+}
+
+function sendKnownError(res, error, jobId = "") {
+  const known = findLocalWebHttpError(error) || error;
+  const status = Number(known?.statusCode || 500);
+  const safeStatus = status >= 400 && status <= 599 ? status : 500;
+  return sendJson(res, safeStatus, {
+    error: error instanceof Error ? error.message : String(error),
+    code: text(known?.code) || "INTERNAL_ERROR",
+    ...(jobId ? { jobId } : {}),
+  });
 }
 
 function handleGetJob(url, res) {
@@ -934,7 +1083,7 @@ async function handleListTasks(res) {
   await Promise.all(jobsToSummarize.map((job) => reconcileTaskFromOutput(job)));
   const tasks = await Promise.all(jobsToSummarize.map((job) => taskSummary(job)));
   tasks.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
-  sendJson(res, 200, { tasks, activeJobId });
+  sendJson(res, 200, { tasks, activeJobId, activePhase: submissionGate.snapshot()?.phase || "idle" });
 }
 
 async function handleGetTask(url, res) {
@@ -982,7 +1131,7 @@ async function handleDeleteTask(url, res) {
   const jobId = decodeURIComponent(url.pathname.replace("/api/tasks/", ""));
   const job = jobs.get(jobId);
   if (!job) return sendJson(res, 404, { error: "任务不存在。" });
-  if (activeJobId === job.id || ["submitting", "queued", "running"].includes(job.status)) {
+  if (activeJobId === job.id || ["receiving", "submitting", "queued", "running", "canceling"].includes(job.status)) {
     return sendJson(res, 409, { error: "这个任务正在生成中，完成后再删除。" });
   }
 
@@ -1000,6 +1149,7 @@ async function handleDeleteTask(url, res) {
   }
 
   jobs.delete(job.id);
+  submissionGate.forget(job.idempotencyKey);
   await persistTasks();
   sendJson(res, 200, { ok: true, taskId: job.id, deleted: [...new Set([...deleted, "task"])] });
 }
@@ -1007,13 +1157,7 @@ async function handleDeleteTask(url, res) {
 async function handleCreateBriefExpansion(req, res) {
   const submissionClient = getRequestClient(req);
   console.log(`[api/brief-expansions] submission received at ${new Date().toISOString()} client=${submissionClient.address} host=${submissionClient.host}`);
-  const request = new Request(`http://localhost${req.url}`, {
-    method: req.method,
-    headers: req.headers,
-    body: Readable.toWeb(req),
-    duplex: "half",
-  });
-  const form = await request.formData();
+  const form = await parseMultipartForm(req, uploadLimits);
   const references = form.getAll("referenceImages").filter((item) => item && typeof item === "object");
   const template = form.get("template");
   const briefText = text(form.get("briefText"));
@@ -1022,9 +1166,9 @@ async function handleCreateBriefExpansion(req, res) {
   const submittedTargetPlatform = normalizeTargetPlatform(text(form.get("targetPlatform")));
   const submittedOutputLanguage = normalizeOutputLanguage(text(form.get("outputLanguage")));
   const suiteRatio = text(form.get("suiteRatio")) || fixedSuiteRatio;
-  if (!references.length) return sendJson(res, 400, { error: "请先上传产品图片。" });
-
   const templateText = template && typeof template === "object" ? await template.text() : "";
+  validateBriefInputs({ template, templateText, briefText, briefFocus }, uploadLimits);
+  await validateReferenceImages(references, uploadLimits);
   const referenceNames = references.map((file) => file.name).filter(Boolean);
   const templateName = template && typeof template === "object" ? template.name : "";
   const structuredInput = buildStructuredBriefInput({
@@ -1417,23 +1561,44 @@ async function outputFilesInGroup(outputId, group, archiveDir) {
 
 async function readJsonBody(req) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(Buffer.from(chunk));
+  const maxBytes = 1024 * 1024;
+  const declared = Number(req.headers["content-length"] || 0);
+  if (declared > maxBytes) {
+    const error = new Error("JSON 请求不能超过 1 MiB。");
+    error.statusCode = 413;
+    error.code = "PAYLOAD_TOO_LARGE";
+    throw error;
+  }
+  let total = 0;
+  for await (const chunk of req) {
+    const data = Buffer.from(chunk);
+    total += data.length;
+    if (total > maxBytes) {
+      const error = new Error("JSON 请求不能超过 1 MiB。");
+      error.statusCode = 413;
+      error.code = "PAYLOAD_TOO_LARGE";
+      throw error;
+    }
+    chunks.push(data);
+  }
   if (!chunks.length) return {};
   const raw = Buffer.concat(chunks).toString("utf8").trim();
   if (!raw) return {};
   return JSON.parse(raw);
 }
 
-async function runWorkflow(job) {
+async function runWorkflow(job, lease) {
   try {
     loadDotEnv(path.join(rootDir, ".env"), { override: true });
     job.status = "submitting";
     job.message = "正在检查素材并启动本地工作流。";
     job.updatedAt = new Date().toISOString();
     addJobEvent(job, "submitting", "正在检查素材并启动本地工作流。");
+    submissionGate.transition(lease.token, "submitting");
     await validateWorkflowInput(job);
+    lastDiskStatus = await requireDiskSpace([inputRoot, outputRoot], { minimumBytes: minimumFreeBytes() });
   } catch (error) {
-    finishJobAsFailed(job, error instanceof Error ? error.message : String(error), { stage: "preflight" });
+    await finalizeWorkflowWithoutChild(job, lease, error, { stage: "preflight" });
     return;
   }
 
@@ -1442,44 +1607,46 @@ async function runWorkflow(job) {
   job.timing = { ...(job.timing || {}), workflowStartedAt: new Date().toISOString() };
   job.updatedAt = new Date().toISOString();
   addJobEvent(job, "running", "本地工作流已启动，正在生成主图和详情页。");
-  const pnpm = createPnpmCommand(["run", "folder"]);
-  const child = spawn(pnpm.command, pnpm.args, {
-    cwd: rootDir,
-    env: {
-      ...process.env,
-      DROP_INPUT_DIR: "待作图",
-      FORCE_REGENERATE: "false",
-      LOCAL_IMAGE_TEST_MODE: "false",
-      TARGET_TASK_ID: job.taskId || job.id,
-      TARGET_TASK_DIR: job.materialDir,
-      TARGET_PRODUCT_NAME: job.productName,
-    },
-    windowsHide: true,
-  });
+  submissionGate.transition(lease.token, "running");
+  let child;
+  try {
+    child = spawnWorkflowChild(job);
+  } catch (error) {
+    await finalizeWorkflowWithoutChild(job, lease, error, { stage: "spawn" });
+    return;
+  }
+  const workflow = {
+    jobId: job.id,
+    leaseToken: lease.token,
+    child,
+    cancelRequested: false,
+    timedOut: false,
+    startedAt: Date.now(),
+    timeout: null,
+    finalize: null,
+  };
+  currentWorkflow = workflow;
 
-  child.stdout.on("data", (chunk) => {
-    const output = chunk.toString();
-    job.log = trimLog(job.log + output);
-    ingestWorkflowProgress(job, output);
-    job.updatedAt = new Date().toISOString();
-    schedulePersistTasks();
-  });
-  child.stderr.on("data", (chunk) => {
-    const output = chunk.toString();
-    job.log = trimLog(job.log + output);
-    ingestWorkflowProgress(job, output);
-    job.updatedAt = new Date().toISOString();
-    schedulePersistTasks();
-  });
-  child.on("error", (error) => {
-    finishJobAsFailed(job, `本地工作流启动失败：${error.message}`, { stage: "spawn" });
-  });
-  child.on("close", async (code) => {
+  workflow.finalize = createOnceAsyncFinalizer(async ({ kind = "close", code = child.exitCode, error = null } = {}) => {
+    if (workflow.timeout) clearTimeout(workflow.timeout);
     try {
       const outputId = job.outputFolderName || job.outputId || job.productName;
       const output = await describeOutput(outputId);
       job.output = output;
-      if (code === 0 && output?.status === "已完成") {
+      if (workflow.cancelRequested || kind === "cancel") {
+        job.status = output && hasVisibleOutput(output) ? "partial" : "cancelled";
+        job.message = output && hasVisibleOutput(output)
+          ? "任务已取消，已保留当前完成的图片。"
+          : "任务已取消，运行资源已经释放。";
+      } else if (workflow.timedOut || kind === "timeout") {
+        job.status = output && hasVisibleOutput(output) ? "partial" : "failed";
+        job.message = output && hasVisibleOutput(output)
+          ? "任务超过最长运行时间，已停止并保留当前完成的图片。"
+          : "任务超过最长运行时间，工作流已经停止。";
+      } else if (error) {
+        job.status = "failed";
+        job.message = `本地工作流启动失败：${error instanceof Error ? error.message : String(error)}`;
+      } else if (code === 0 && output?.status === "已完成") {
         job.status = "done";
         job.message = "生成完成，可以查看成品图。";
       } else if (code === 0 && output?.status === "部分失败") {
@@ -1491,17 +1658,116 @@ async function runWorkflow(job) {
         job.status = "failed";
         job.message = output?.errorMessage || friendlyWorkflowFailureMessage(job.log, code);
       }
-      addJobEvent(job, job.status, job.message, { exitCode: code, productName: job.productName, outputId });
-    } catch (error) {
+      addJobEvent(job, job.status, job.message, { exitCode: code, productName: job.productName, outputId, finalizationKind: kind });
+    } catch (finalizeError) {
       job.status = "failed";
-      job.message = error instanceof Error ? error.message : String(error);
+      job.message = finalizeError instanceof Error ? finalizeError.message : String(finalizeError);
       addJobEvent(job, "failed", job.message, { productName: job.productName, outputId: job.outputFolderName || job.outputId });
     } finally {
       job.updatedAt = new Date().toISOString();
-      activeJobId = null;
-      schedulePersistTasks();
+      if (currentWorkflow === workflow) currentWorkflow = null;
+      submissionGate.release(lease.token);
+      activeJobId = submissionGate.snapshot()?.jobId || null;
+      await persistTasks().catch((persistError) => console.warn(`保存工作流最终状态失败：${persistError instanceof Error ? persistError.message : String(persistError)}`));
     }
   });
+
+  const hardTimeoutMs = workflowHardTimeoutMs();
+  workflow.timeout = setTimeout(async () => {
+    workflow.timedOut = true;
+    job.message = "任务超过最长运行时间，正在停止工作流并保留已完成图片。";
+    addJobEvent(job, "workflow-timeout", job.message, { timeoutMs: hardTimeoutMs });
+    await terminateProcessTree(child).catch(() => undefined);
+    await workflow.finalize({ kind: "timeout", code: child.exitCode });
+  }, hardTimeoutMs);
+
+  child.stdout?.on("data", (chunk) => {
+    const output = chunk.toString();
+    job.log = trimLog(job.log + output);
+    ingestWorkflowProgress(job, output);
+    job.updatedAt = new Date().toISOString();
+    schedulePersistTasks();
+  });
+  child.stderr?.on("data", (chunk) => {
+    const output = chunk.toString();
+    job.log = trimLog(job.log + output);
+    ingestWorkflowProgress(job, output);
+    job.updatedAt = new Date().toISOString();
+    schedulePersistTasks();
+  });
+  child.on("error", (error) => workflow.finalize({ kind: "spawn-error", error }));
+  child.on("close", (code) => workflow.finalize({ kind: "close", code }));
+}
+
+function spawnWorkflowChild(job) {
+  const commonEnv = {
+    ...process.env,
+    WORKSPACE_DIR: rootDir,
+    DROP_INPUT_DIR: inputRoot,
+    DROP_OUTPUT_DIR: outputRoot,
+    FORCE_REGENERATE: "false",
+    LOCAL_IMAGE_TEST_MODE: process.env.LOCAL_IMAGE_TEST_MODE || "false",
+    TARGET_TASK_ID: job.taskId || job.id,
+    TARGET_TASK_DIR: job.materialDir,
+    TARGET_PRODUCT_NAME: job.productName,
+  };
+  const testScript = process.env.NODE_ENV === "test" ? text(process.env.LOCAL_WEB_TEST_WORKFLOW_SCRIPT) : "";
+  if (testScript) {
+    const resolved = path.resolve(rootDir, testScript);
+    if (!isInside(rootDir, resolved)) throw new Error("测试工作流脚本必须位于项目目录内。");
+    return spawn(process.execPath, [resolved], { cwd: rootDir, env: commonEnv, windowsHide: true });
+  }
+  const pnpm = createPnpmCommand(["run", "folder"]);
+  return spawn(pnpm.command, pnpm.args, { cwd: rootDir, env: commonEnv, windowsHide: true });
+}
+
+function workflowHardTimeoutMs() {
+  const value = Number(process.env.LOCAL_WEB_WORKFLOW_TIMEOUT_MS || 135 * 60 * 1000);
+  return Number.isFinite(value) && value >= 1000 ? value : 135 * 60 * 1000;
+}
+
+async function handleCancelJob(url, res) {
+  const jobId = decodeURIComponent(url.pathname.replace("/api/jobs/", "").replace(/\/cancel$/, ""));
+  const job = jobs.get(jobId);
+  if (!job) return sendJson(res, 404, { error: "任务不存在。", code: "JOB_NOT_FOUND" });
+  if (["cancelled", "done", "partial", "failed", "interrupted"].includes(job.status)) return sendJson(res, 200, job);
+  const workflow = currentWorkflow;
+  if (!workflow || workflow.jobId !== jobId) {
+    const active = submissionGate.snapshot();
+    if (active?.jobId !== jobId || !["receiving", "submitting", "queued", "canceling"].includes(job.status)) {
+      return sendJson(res, 409, { error: "任务没有可取消的活动流程。", code: "WORKFLOW_NOT_RUNNING" });
+    }
+    job.cancelRequested = true;
+    job.status = "canceling";
+    job.message = "已请求取消；当前校验或扩写结束后不会启动生图工作流。";
+    submissionGate.transition(active.token, "canceling");
+    addJobEvent(job, "canceling", job.message);
+    await persistTasks();
+    return sendJson(res, 202, job);
+  }
+
+  workflow.cancelRequested = true;
+  job.status = "canceling";
+  job.message = "正在停止工作流，已经生成的图片会保留。";
+  job.updatedAt = new Date().toISOString();
+  submissionGate.transition(workflow.leaseToken, "canceling");
+  addJobEvent(job, "canceling", job.message);
+  await persistTasks();
+  await terminateProcessTree(workflow.child).catch((error) => {
+    job.log = trimLog(`${job.log}\n取消进程失败：${error instanceof Error ? error.message : String(error)}`);
+  });
+  await workflow.finalize({ kind: "cancel", code: workflow.child.exitCode });
+  return sendJson(res, 200, job);
+}
+
+async function finalizeWorkflowWithoutChild(job, lease, error, detail = {}) {
+  job.status = "failed";
+  job.message = error instanceof Error ? error.message : String(error);
+  job.updatedAt = new Date().toISOString();
+  addJobEvent(job, "failed", job.message, { productName: job.productName, outputId: job.outputFolderName || job.outputId, ...detail });
+  submissionGate.release(lease.token);
+  activeJobId = submissionGate.snapshot()?.jobId || null;
+  await persistTasks().catch((persistError) => console.warn(`保存预检失败状态失败：${persistError instanceof Error ? persistError.message : String(persistError)}`));
 }
 
 async function validateWorkflowInput(job) {
@@ -1516,15 +1782,6 @@ async function validateWorkflowInput(job) {
 
   const promptCount = files.filter((entry) => entry.isFile() && promptFileExtensions.has(path.extname(entry.name).toLowerCase())).length;
   if (!promptCount) throw new Error("任务素材目录里没有需求模板，请输入作图重点或重新提交任务。");
-}
-
-function finishJobAsFailed(job, message, detail = {}) {
-  job.status = "failed";
-  job.message = message;
-  job.updatedAt = new Date().toISOString();
-  activeJobId = null;
-  addJobEvent(job, "failed", message, { productName: job.productName, outputId: job.outputFolderName || job.outputId, ...detail });
-  schedulePersistTasks();
 }
 
 function friendlyWorkflowFailureMessage(log, code) {
@@ -2808,6 +3065,19 @@ function isInside(parent, child) {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+function configuredPath(name, fallback) {
+  const value = text(process.env[name]);
+  return value ? path.resolve(rootDir, value) : path.resolve(fallback);
+}
+
+function isProtectedWriteRequest(req, url) {
+  if (req.method === "DELETE") return true;
+  if (req.method !== "POST") return false;
+  return url.pathname === "/api/jobs"
+    || url.pathname === "/api/brief-expansions"
+    || /^\/api\/jobs\/[^/]+\/cancel$/.test(url.pathname);
+}
+
 async function readJson(filePath) {
   try {
     return JSON.parse(await fs.readFile(filePath, "utf8"));
@@ -2816,20 +3086,20 @@ async function readJson(filePath) {
   }
 }
 
-function setCors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+function applyCors(req, res) {
+  const origin = corsOriginForRequest(req, allowedOrigins);
+  if (origin) res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization,X-Internal-Token,X-Idempotency-Key");
 }
 
 function sendJson(res, status, body) {
-  setCors(res);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(body));
 }
 
 function sendNoContent(res) {
-  setCors(res);
   res.writeHead(204);
   res.end();
 }

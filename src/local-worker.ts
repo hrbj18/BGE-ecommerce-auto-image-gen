@@ -320,10 +320,11 @@ function isDurableReferenceImageUrl(url: string): boolean {
 
 async function withRunLock<T>(lockPath: string, logger: Logger, action: () => Promise<T>): Promise<T> {
   let handle: fs.FileHandle | undefined;
+  const startedAt = new Date().toISOString();
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       handle = await fs.open(lockPath, "wx");
-      await handle.writeFile(JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+      await handle.writeFile(JSON.stringify({ pid: process.pid, startedAt, heartbeatAt: startedAt }));
       break;
     } catch (error) {
       const code = error && typeof error === "object" ? (error as { code?: string }).code : "";
@@ -340,9 +341,15 @@ async function withRunLock<T>(lockPath: string, logger: Logger, action: () => Pr
     }
   }
   if (!handle) throw new Error(`自动化锁创建失败，请稍后重试：${lockPath}`);
+  const heartbeat = setInterval(() => {
+    const now = new Date();
+    fs.utimes(lockPath, now, now).catch(() => undefined);
+  }, runLockHeartbeatMs());
+  heartbeat.unref();
   try {
     return await action();
   } finally {
+    clearInterval(heartbeat);
     await handle?.close().catch(() => undefined);
     await fs.unlink(lockPath).catch(() => undefined);
   }
@@ -354,20 +361,24 @@ type RunLockInspection = {
   reason: string;
   pid?: number;
   startedAt?: string;
+  heartbeatAt?: string;
   ageMs?: number;
+  heartbeatAgeMs?: number;
 };
 
 async function inspectRunLock(lockPath: string): Promise<RunLockInspection> {
   let raw = "";
+  let lockMtime = "";
   try {
     raw = await fs.readFile(lockPath, "utf8");
+    lockMtime = (await fs.stat(lockPath)).mtime.toISOString();
   } catch (error) {
     const code = error && typeof error === "object" ? (error as { code?: string }).code : "";
     if (code === "ENOENT") return { missing: true, stale: true, reason: "锁文件已不存在" };
     return { stale: true, reason: `锁文件无法读取：${error instanceof Error ? error.message : String(error)}` };
   }
 
-  let parsed: { pid?: unknown; startedAt?: unknown } = {};
+  let parsed: { pid?: unknown; startedAt?: unknown; heartbeatAt?: unknown } = {};
   try {
     parsed = raw.trim() ? JSON.parse(raw) : {};
   } catch {
@@ -376,12 +387,22 @@ async function inspectRunLock(lockPath: string): Promise<RunLockInspection> {
 
   const pid = typeof parsed.pid === "number" ? parsed.pid : Number(parsed.pid);
   const startedAt = typeof parsed.startedAt === "string" ? parsed.startedAt : "";
+  const storedHeartbeatAt = typeof parsed.heartbeatAt === "string" ? parsed.heartbeatAt : "";
+  const heartbeatAt = [storedHeartbeatAt, lockMtime]
+    .filter(Boolean)
+    .sort((left, right) => Date.parse(right) - Date.parse(left))[0] || "";
   const startedAtMs = startedAt ? Date.parse(startedAt) : NaN;
+  const heartbeatAtMs = heartbeatAt ? Date.parse(heartbeatAt) : NaN;
   const ageMs = Number.isFinite(startedAtMs) ? Date.now() - startedAtMs : undefined;
+  const heartbeatAgeMs = Number.isFinite(heartbeatAtMs) ? Date.now() - heartbeatAtMs : undefined;
   const maxAgeMs = runLockStaleMs();
 
+  if (heartbeatAt && heartbeatAgeMs !== undefined && heartbeatAgeMs > runLockHeartbeatStaleMs()) {
+    return { stale: true, reason: `锁心跳已停止 ${formatDuration(heartbeatAgeMs)}`, pid, startedAt, heartbeatAt, ageMs, heartbeatAgeMs };
+  }
+
   if (!Number.isInteger(pid) || pid <= 0) {
-    return { stale: true, reason: "锁文件缺少有效进程号", startedAt, ageMs };
+    return { stale: true, reason: "锁文件缺少有效进程号", startedAt, heartbeatAt, ageMs, heartbeatAgeMs };
   }
   if (ageMs !== undefined && ageMs > maxAgeMs) {
     return {
@@ -389,14 +410,16 @@ async function inspectRunLock(lockPath: string): Promise<RunLockInspection> {
       reason: `锁文件已超过 ${formatDuration(maxAgeMs)}，上次任务可能异常中断`,
       pid,
       startedAt,
-      ageMs
+      heartbeatAt,
+      ageMs,
+      heartbeatAgeMs
     };
   }
   if (!isProcessAlive(pid)) {
-    return { stale: true, reason: `锁中进程 ${pid} 已不存在`, pid, startedAt, ageMs };
+    return { stale: true, reason: `锁中进程 ${pid} 已不存在`, pid, startedAt, heartbeatAt, ageMs, heartbeatAgeMs };
   }
 
-  return { stale: false, reason: "锁中进程仍在运行", pid, startedAt, ageMs };
+  return { stale: false, reason: heartbeatAt ? "锁心跳正常" : "锁中进程仍在运行", pid, startedAt, heartbeatAt, ageMs, heartbeatAgeMs };
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -412,6 +435,16 @@ function isProcessAlive(pid: number): boolean {
 function runLockStaleMs(): number {
   const raw = Number(process.env.AUTOMATION_LOCK_STALE_MS ?? "");
   return Number.isFinite(raw) && raw > 0 ? raw : 12 * 60 * 60 * 1000;
+}
+
+function runLockHeartbeatMs(): number {
+  const raw = Number(process.env.AUTOMATION_LOCK_HEARTBEAT_MS ?? "");
+  return Number.isFinite(raw) && raw >= 1000 ? raw : 15_000;
+}
+
+function runLockHeartbeatStaleMs(): number {
+  const raw = Number(process.env.AUTOMATION_LOCK_HEARTBEAT_STALE_MS ?? "");
+  return Number.isFinite(raw) && raw >= 10_000 ? raw : 90_000;
 }
 
 function formatDuration(ms: number): string {

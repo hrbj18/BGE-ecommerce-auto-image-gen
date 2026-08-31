@@ -36,6 +36,8 @@ pnpm install --frozen-lockfile
 pnpm run bootstrap
 ```
 
+也可以直接双击根目录 `一键启动项目.bat`。启动器会验证 Node.js 24+，在缺少 pnpm 时通过 Corepack 自动启用，并在首次下载后缺少 `node_modules` 时按锁文件自动安装依赖；完成后启动前后端。若网络或权限导致自动准备失败，窗口会保留中文原因、退出代码和日志路径，再按上面的手动命令排障。
+
 `bootstrap` 只创建缺失的 `待作图/`、`已完成/`、`data/`、`output/`、`templates/` 和本机 `.env`。已有目录、需求模板和 `.env` 一律保留；命令不会调用任何模型或生图 API。
 
 ## 无付费验收

@@ -113,7 +113,11 @@ h1 {
   background: #ecff8a;
 }
 
-.status-running {
+.status-running,
+.status-receiving,
+.status-submitting,
+.status-queued,
+.status-canceling {
   border-color: #9db4ff;
   color: #22356d;
   background: #edf2ff;
@@ -852,8 +856,10 @@ h1 {
 }
 
 .task-status-dot.status-running,
+.task-status-dot.status-receiving,
 .task-status-dot.status-queued,
-.task-status-dot.status-submitting {
+.task-status-dot.status-submitting,
+.task-status-dot.status-canceling {
   border-color: #9db4ff;
   color: #22356d;
   background: #edf2ff;
@@ -863,6 +869,49 @@ h1 {
   border-color: #fecdca;
   color: #b42318;
   background: #fff7f6;
+}
+
+.task-status-dot.status-cancelled,
+.task-status-dot.status-interrupted {
+  border-color: #d0d5dd;
+  color: #475467;
+  background: #f2f4f7;
+}
+
+.access-token-field {
+  display: grid;
+  gap: 7px;
+  padding: 13px 14px;
+  border: 1px solid #dbe2ed;
+  border-radius: 16px;
+  background: #f8fafc;
+}
+
+.access-token-field span {
+  color: #344054;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.access-token-field input {
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid #cfd7e6;
+  border-radius: 11px;
+  background: #fff;
+  font: inherit;
+}
+
+.access-token-field small {
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.compact-cancel-button {
+  width: 100%;
+  min-height: 46px;
 }
 
 .task-status-dot.status-deleted,
@@ -2276,6 +2325,57 @@ h1 {
   border-radius: 12px;
 }
 
+.reference-image-open {
+  position: absolute;
+  inset: 10px;
+  display: grid;
+  width: auto;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: none;
+  cursor: zoom-in;
+}
+
+.reference-image-open img {
+  grid-area: 1 / 1;
+}
+
+.reference-image-open em {
+  grid-area: 1 / 1;
+  align-self: end;
+  justify-self: center;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(15, 23, 42, 0.78);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+  opacity: 0;
+  transform: translateY(5px);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.reference-image-open:hover em,
+.reference-image-open:focus-visible em {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.reference-image-open:focus-visible {
+  outline: 3px solid rgba(166, 214, 0, 0.65);
+  outline-offset: 2px;
+}
+
 .reference-preview span {
   position: absolute;
   left: 10px;
@@ -2319,6 +2419,125 @@ h1 {
   box-shadow: 0 8px 18px rgba(180, 35, 24, 0.12);
   cursor: pointer;
   transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+}
+
+.reference-lightbox-layer {
+  z-index: 50;
+  padding: 18px;
+  background: rgba(9, 14, 25, 0.78);
+}
+
+.reference-lightbox {
+  width: min(1180px, 100%);
+  max-height: calc(100vh - 36px);
+  display: grid;
+  grid-template-rows: auto minmax(280px, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 24px;
+  background: #fff;
+  box-shadow: 0 32px 110px rgba(0, 0, 0, 0.42);
+}
+
+.reference-lightbox-header {
+  min-width: 0;
+}
+
+.reference-lightbox-title {
+  min-width: 0;
+}
+
+.reference-lightbox-title h2 {
+  max-width: min(680px, 58vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reference-zoom-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reference-zoom-tools > button:not(.icon-button) {
+  min-width: 42px;
+  height: 40px;
+  padding: 0 11px;
+  border: 1px solid #dfe5ef;
+  border-radius: 12px;
+  color: #253047;
+  background: #fff;
+}
+
+.reference-lightbox-stage {
+  position: relative;
+  display: grid;
+  min-height: 0;
+  place-items: center;
+  padding: 30px 76px;
+  overflow: auto;
+  background:
+    linear-gradient(45deg, rgba(148, 163, 184, 0.14) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(148, 163, 184, 0.14) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(148, 163, 184, 0.14) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(148, 163, 184, 0.14) 75%),
+    #eef2f7;
+  background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+  background-size: 24px 24px;
+}
+
+.reference-lightbox-stage > img {
+  max-width: 100%;
+  max-height: calc(100vh - 300px);
+  object-fit: contain;
+  transform: scale(var(--reference-preview-zoom, 1));
+  transform-origin: center;
+  transition: transform 100ms ease-out;
+}
+
+.reference-lightbox-stage .preview-nav {
+  position: fixed;
+  top: 50%;
+  z-index: 2;
+}
+
+.reference-lightbox-stage .preview-nav.left {
+  left: max(30px, calc((100vw - min(1180px, calc(100vw - 36px))) / 2 + 22px));
+}
+
+.reference-lightbox-stage .preview-nav.right {
+  right: max(30px, calc((100vw - min(1180px, calc(100vw - 36px))) / 2 + 22px));
+}
+
+.reference-lightbox-meta {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(150px, 0.8fr) minmax(120px, 0.6fr);
+  gap: 12px 20px;
+  padding: 16px 22px 18px;
+  border-top: 1px solid #e5eaf1;
+}
+
+.reference-lightbox-meta div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.reference-lightbox-meta span,
+.reference-lightbox-meta small {
+  color: #687386;
+  font-size: 12px;
+}
+
+.reference-lightbox-meta strong {
+  overflow-wrap: anywhere;
+  color: #172033;
+  font-size: 14px;
+}
+
+.reference-lightbox-meta small {
+  grid-column: 1 / -1;
 }
 
 .reference-delete-floating:hover {
@@ -3117,6 +3336,14 @@ h1 {
     grid-template-columns: repeat(auto-fill, minmax(220px, 280px));
   }
 
+  .reference-lightbox-meta {
+    grid-template-columns: minmax(0, 1fr) minmax(140px, 0.6fr);
+  }
+
+  .reference-lightbox-meta div:first-child {
+    grid-column: 1 / -1;
+  }
+
   .gallery-header {
     grid-template-columns: 1fr;
   }
@@ -3159,6 +3386,37 @@ h1 {
   .history-records-title {
     align-items: flex-start;
     flex-wrap: wrap;
+  }
+
+  .reference-lightbox-layer {
+    padding: 0;
+  }
+
+  .reference-lightbox {
+    max-height: 100vh;
+    min-height: 100vh;
+    border-radius: 0;
+  }
+
+  .reference-lightbox-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .reference-lightbox-title h2 {
+    max-width: calc(100vw - 44px);
+  }
+
+  .reference-lightbox-stage {
+    padding: 22px 56px;
+  }
+
+  .reference-lightbox-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .reference-lightbox-meta div:first-child {
+    grid-column: auto;
   }
 
   .history-title-actions {
