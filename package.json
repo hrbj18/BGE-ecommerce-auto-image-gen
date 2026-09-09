@@ -18,6 +18,7 @@
     "backend:dev": "node scripts/local-web-server.mjs",
     "frontend:dev": "pnpm --dir frontend run dev",
     "frontend:build": "pnpm --dir frontend run build",
+    "smoke:reference-drag": "node scripts/smoke-reference-drag-upload.mjs",
     "build:template": "node scripts/build_excel_template.mjs",
     "handoff:audit": "python scripts/audit_handoff.py --root .",
     "release:audit": "node scripts/audit-release.mjs",

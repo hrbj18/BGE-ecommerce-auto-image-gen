@@ -35,6 +35,10 @@ export function buildConcreteBriefSections(options?: {
   rawBriefText?: string;
   productImageAnalysis?: string;
   outputLanguage?: string;
+  generationProfile?: {
+    mainImageCount?: number;
+    detailImageCount?: number;
+  } | null;
 }): {
   extractedPoints: string;
   evidence: string;
@@ -70,6 +74,10 @@ export function briefExpansionQualityIssues(
     productName?: string;
     productImageAnalysis?: string;
     outputLanguage?: string;
+    generationProfile?: {
+      mainImageCount?: number;
+      detailImageCount?: number;
+    } | null;
   },
 ): string[];
 

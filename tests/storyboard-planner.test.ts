@@ -36,6 +36,43 @@ test("generic storyboard keeps the five main shots different", () => {
   assert.equal(plan.audit.passed, true);
 });
 
+test("compact suite plans only two main images and three continuous detail screens", () => {
+  const plan = buildStoryboardPlan({
+    productName: "轻便收纳椅",
+    sellingPoints: ["轻便", "静音滑轮", "靠背承托"],
+    generateDetail: true,
+    mainImageCount: 2,
+    detailImageCount: 3,
+  });
+
+  assert.equal(plan.frames.length, 5);
+  assert.deepEqual(plan.frames.map((frame) => `${frame.role}-${frame.index}`), [
+    "main-1",
+    "main-2",
+    "detail-1",
+    "detail-2",
+    "detail-3",
+  ]);
+  assert.equal(plan.audit.passed, true, plan.audit.issues.join("\n"));
+});
+
+test("smaller and larger compact suites keep continuous role-local screen numbering", () => {
+  for (const expected of [
+    { mainImageCount: 1, detailImageCount: 2, keys: ["main-1", "detail-1", "detail-2"] },
+    { mainImageCount: 3, detailImageCount: 4, keys: ["main-1", "main-2", "main-3", "detail-1", "detail-2", "detail-3", "detail-4"] },
+  ]) {
+    const plan = buildStoryboardPlan({
+      productName: "轻便收纳椅",
+      sellingPoints: ["轻便", "静音滑轮", "靠背承托", "易清洁"],
+      generateDetail: true,
+      mainImageCount: expected.mainImageCount,
+      detailImageCount: expected.detailImageCount,
+    });
+    assert.deepEqual(plan.frames.map((frame) => `${frame.role}-${frame.index}`), expected.keys);
+    assert.equal(plan.audit.passed, true, plan.audit.issues.join("\n"));
+  }
+});
+
 test("robot storyboard does not invent an English feature when the user did not provide it", () => {
   const plan = buildStoryboardPlan({
     productName: "桌面陪伴机器人",

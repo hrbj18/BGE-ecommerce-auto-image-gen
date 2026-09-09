@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["esnext", "dom"],
+    "baseUrl": "./",
+    "paths": {
+      "@/*": ["src/*"]
+    },
+    "strict": true,
+    "skipLibCheck": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "useDefineForClassFields": true,
+    "allowJs": true,
+    "noEmit": true,
+    "types": ["node", "vite/client", "element-plus/global"]
+  },
+  "files": [
+    "src/types/global.d.ts",
+    "src/api/bge/task.ts"
+    ,"src/views/bge/task/index.vue"
+    ,"src/views/bge/task/AuthenticatedImage.vue"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

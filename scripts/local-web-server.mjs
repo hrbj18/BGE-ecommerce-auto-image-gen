@@ -21,6 +21,27 @@ import { authorizeWriteRequest, corsOriginForRequest, normalizeAccessMode } from
 import { createOnceAsyncFinalizer, terminateProcessTree } from "./local-web-process-manager.mjs";
 import { inspectDiskSpace, minimumFreeBytes, requireDiskSpace } from "./local-web-storage.mjs";
 import { AtomicJsonStore } from "./local-web-task-store.mjs";
+import { requireImageProviderConnectivity } from "./image-provider-connectivity.mjs";
+import {
+  defaultGenerationProfileId,
+  findGenerationProfile,
+  listGenerationProfiles,
+  resolveGenerationProfile,
+} from "../src/generation-profiles.mjs";
+import {
+  defaultImageResolutionId,
+  findImageResolutionProfile,
+  imageResolutionProfileForTask,
+  listImageResolutionProfiles,
+  resolveImageResolutionProfile,
+} from "../src/image-resolution-profiles.mjs";
+import {
+  defaultImageAspectRatioProfileId,
+  findImageAspectRatioProfile,
+  imageAspectRatioProfileForTask,
+  listImageAspectRatioProfiles,
+  resolveImageAspectRatioProfile,
+} from "../src/image-aspect-ratio-profiles.mjs";
 import {
   findLocalWebHttpError,
   parseMultipartForm,
@@ -39,6 +60,7 @@ const taskRoot = path.join(localStateRoot, "tasks");
 const taskStorePath = path.join(taskRoot, "tasks.json");
 const taskMetadataFilename = "任务信息.json";
 const port = Number(process.env.LOCAL_WEB_PORT || 8787);
+const host = String(process.env.LOCAL_WEB_HOST || "0.0.0.0").trim() || "0.0.0.0";
 const jobs = new Map();
 const briefExpansionJobs = new Map();
 const submissionGate = new SubmissionGate();
@@ -46,6 +68,7 @@ const taskStore = new AtomicJsonStore(taskStorePath);
 const uploadLimits = readUploadLimits();
 const accessMode = normalizeAccessMode(process.env.LOCAL_WEB_ACCESS_MODE);
 const accessToken = String(process.env.LOCAL_WEB_ACCESS_TOKEN || "").trim();
+const requireReadToken = /^(1|true|yes|token)$/i.test(String(process.env.LOCAL_WEB_REQUIRE_READ_TOKEN || "").trim());
 const allowedOrigins = String(process.env.LOCAL_WEB_ALLOWED_ORIGINS || "").trim();
 let activeJobId = null;
 let taskPersistTimer = null;
@@ -55,7 +78,9 @@ let lastDiskStatus = null;
 
 const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
 const promptFileExtensions = new Set([".md", ".txt"]);
-const fixedSuiteRatio = "主图 1:1 / 详情页 9:16";
+const defaultGenerationProfile = resolveGenerationProfile(defaultGenerationProfileId);
+const defaultImageResolution = resolveImageResolutionProfile(defaultImageResolutionId);
+const defaultImageAspectRatioProfile = resolveImageAspectRatioProfile(defaultImageAspectRatioProfileId);
 const internalBriefPhrases = [
   "用户当前输入",
   "用户原始输入",
@@ -82,7 +107,11 @@ const knownBriefHeadings = new Set([
   "可见展示名",
   "目标平台",
   "输出语言",
+  "套图方案",
   "套图比例",
+  "主图数量",
+  "详情页数量",
+  "图片清晰度",
   "人群",
   "目标人群",
   "类目",
@@ -117,6 +146,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "OPTIONS") return sendNoContent(res);
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     if (shuttingDown && req.method !== "GET") return sendJson(res, 503, { error: "服务正在安全关闭，请稍后重试。", code: "SERVER_SHUTTING_DOWN" });
+    if (requireReadToken && req.method === "GET") {
+      const authorization = authorizeWriteRequest(req, accessToken, "token");
+      if (!authorization.ok) return sendJson(res, authorization.statusCode || 401, { error: "只读管理接口需要内部访问令牌。", code: authorization.code });
+    }
     if (isProtectedWriteRequest(req, url)) {
       const authorization = authorizeWriteRequest(req, accessToken, accessMode);
       if (!authorization.ok) return sendJson(res, authorization.statusCode || 401, { error: authorization.message, code: authorization.code });
@@ -136,6 +169,9 @@ const server = http.createServer(async (req, res) => {
         activeJobId: active?.jobId || null,
         activePhase: active?.phase || "idle",
         acceptingJobs: serviceState === "ready",
+        generationProfiles: listGenerationProfiles(),
+        imageAspectRatioProfiles: listImageAspectRatioProfiles(),
+        imageResolutionProfiles: listImageResolutionProfiles(),
         disk: lastDiskStatus ? {
           ok: lastDiskStatus.ok,
           availableGiB: lastDiskStatus.availableGiB,
@@ -146,14 +182,14 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/jobs") {
       const client = getRequestClient(req);
       console.log(`[api/jobs] submission received at ${new Date().toISOString()} client=${client.address} host=${client.host}`);
-      return handleCreateJob(req, res);
+      return await handleCreateJob(req, res);
     }
     if (req.method === "POST" && /^\/api\/jobs\/[^/]+\/cancel$/.test(url.pathname)) return await handleCancelJob(url, res);
     if (req.method === "GET" && url.pathname.startsWith("/api/jobs/")) return handleGetJob(url, res);
     if (req.method === "GET" && url.pathname === "/api/tasks") return await handleListTasks(res);
     if (req.method === "GET" && url.pathname.startsWith("/api/tasks/")) return await handleGetTask(url, res);
     if (req.method === "DELETE" && url.pathname.startsWith("/api/tasks/")) return await handleDeleteTask(url, res);
-    if (req.method === "POST" && url.pathname === "/api/brief-expansions") return handleCreateBriefExpansion(req, res);
+    if (req.method === "POST" && url.pathname === "/api/brief-expansions") return await handleCreateBriefExpansion(req, res);
     if (req.method === "GET" && url.pathname.startsWith("/api/brief-expansions/")) return handleGetBriefExpansion(url, res);
     if (req.method === "GET" && url.pathname === "/api/examples") return handleListExamples(res);
     if (req.method === "GET" && url.pathname.startsWith("/api/examples/")) return handleGetExample(url, res);
@@ -179,10 +215,11 @@ server.on("error", (error) => {
   setImmediate(() => process.exit(1));
 });
 
-server.listen(port, "0.0.0.0", () => {
-  console.log(`Local ecommerce API listening on http://0.0.0.0:${port}`);
-  if (accessMode === "off") console.warn("内部访问令牌当前已封存：局域网设备可直接创建、取消或删除任务。");
-  if (accessMode === "token" && !accessToken) console.warn("LOCAL_WEB_ACCESS_MODE=token 但未配置令牌：只有本机回环地址可以执行写操作。");
+server.listen(port, host, () => {
+  console.log(`Local ecommerce API listening on http://${host}:${port}`);
+    if (accessMode === "off") console.warn("内部访问令牌当前已封存：局域网设备可直接创建、取消或删除任务。");
+    if (accessMode === "token" && !accessToken) console.warn("LOCAL_WEB_ACCESS_MODE=token 但未配置令牌：只有本机回环地址可以执行写操作。");
+    if (requireReadToken && !accessToken) console.warn("LOCAL_WEB_REQUIRE_READ_TOKEN 已启用但未配置令牌：只有本机回环地址可以读取接口。");
 });
 
 let shutdownPromise = null;
@@ -277,6 +314,9 @@ async function loadPersistedTasks() {
 }
 
 function normalizePersistedJob(item) {
+  const generationProfile = resolveGenerationProfile(item.generationProfileId);
+  const imageAspectRatioProfile = imageAspectRatioProfileForTask(item);
+  const imageResolution = imageResolutionProfileForTask(item, defaultImageResolutionId);
   return {
     id: String(item.id),
     taskId: text(item.taskId) || String(item.id),
@@ -300,7 +340,20 @@ function normalizePersistedJob(item) {
     visibleProductName: text(item.visibleProductName),
     targetPlatform: text(item.targetPlatform),
     outputLanguage: text(item.outputLanguage),
-    suiteRatio: text(item.suiteRatio),
+    suiteRatio: imageAspectRatioProfile.summary,
+    generationProfileId: generationProfile.id,
+    generationProfileLabel: generationProfile.label,
+    generationProfileSummary: generationProfile.summary,
+    mainImageCount: generationProfile.mainImageCount,
+    detailImageCount: generationProfile.detailImageCount,
+    imageAspectRatioProfileId: imageAspectRatioProfile.id,
+    imageAspectRatioProfileLabel: imageAspectRatioProfile.label,
+    mainAspectRatio: imageAspectRatioProfile.mainAspectRatio,
+    detailAspectRatio: imageAspectRatioProfile.detailAspectRatio,
+    imageResolutionId: imageResolution.id,
+    imageResolutionLabel: imageResolution.label,
+    imageResolutionSummary: imageResolution.summary,
+    providerImageResolution: imageResolution.providerResolution,
     briefFocus: text(item.briefFocus),
     briefDiagnostics: normalizeBriefDiagnostics(item.briefDiagnostics),
     submissionClient: item.submissionClient && typeof item.submissionClient === "object"
@@ -364,6 +417,9 @@ function normalizePersistedJob(item) {
 
 async function taskSummary(job) {
   const promptInfo = await promptInfoForJob(job);
+  const generationProfile = resolveGenerationProfile(job.generationProfileId);
+  const imageAspectRatioProfile = imageAspectRatioProfileForTask(job);
+  const imageResolution = imageResolutionProfileForTask(job, defaultImageResolutionId);
   return {
     id: job.id,
     productName: job.productName,
@@ -386,7 +442,19 @@ async function taskSummary(job) {
     visibleProductName: job.visibleProductName || "",
     targetPlatform: job.targetPlatform || "",
     outputLanguage: job.outputLanguage || "",
-    suiteRatio: job.suiteRatio || fixedSuiteRatio,
+    suiteRatio: imageAspectRatioProfile.summary,
+    generationProfileId: generationProfile.id,
+    generationProfileLabel: generationProfile.label,
+    generationProfileSummary: generationProfile.summary,
+    mainImageCount: generationProfile.mainImageCount,
+    detailImageCount: generationProfile.detailImageCount,
+    imageAspectRatioProfileId: imageAspectRatioProfile.id,
+    imageAspectRatioProfileLabel: imageAspectRatioProfile.label,
+    mainAspectRatio: imageAspectRatioProfile.mainAspectRatio,
+    detailAspectRatio: imageAspectRatioProfile.detailAspectRatio,
+    imageResolutionId: imageResolution.id,
+    imageResolutionLabel: imageResolution.label,
+    imageResolutionSummary: imageResolution.summary,
     commonRuleProfile: job.commonRuleProfile || "",
     commonRuleName: job.commonRuleName || "",
     commonRuleFile: job.commonRuleFile || "",
@@ -446,7 +514,7 @@ async function taskDetail(job) {
     visibleProductName: job.visibleProductName || "",
     targetPlatform: job.targetPlatform || "",
     outputLanguage: job.outputLanguage || "",
-    suiteRatio: job.suiteRatio || fixedSuiteRatio,
+    suiteRatio: imageAspectRatioProfileForTask(job).summary,
     briefFocus: job.briefFocus || "",
     briefDiagnostics: normalizeBriefDiagnostics(job.briefDiagnostics),
     briefFallbackReason: job.briefFallbackReason || "",
@@ -511,7 +579,11 @@ async function persistTasks() {
     tasks: [...jobs.values()]
       .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
       .slice(0, 200)
-      .map((job) => ({
+      .map((job) => {
+        const generationProfile = resolveGenerationProfile(job.generationProfileId);
+        const imageAspectRatioProfile = imageAspectRatioProfileForTask(job);
+        const imageResolution = imageResolutionProfileForTask(job, defaultImageResolutionId);
+        return {
         id: job.id,
         taskId: job.taskId || job.id,
         kind: job.kind || "generation",
@@ -536,7 +608,20 @@ async function persistTasks() {
         visibleProductName: job.visibleProductName || "",
         targetPlatform: job.targetPlatform || "",
         outputLanguage: job.outputLanguage || "",
-        suiteRatio: job.suiteRatio || fixedSuiteRatio,
+        suiteRatio: imageAspectRatioProfile.summary,
+        generationProfileId: generationProfile.id,
+        generationProfileLabel: generationProfile.label,
+        generationProfileSummary: generationProfile.summary,
+        mainImageCount: generationProfile.mainImageCount,
+        detailImageCount: generationProfile.detailImageCount,
+        imageAspectRatioProfileId: imageAspectRatioProfile.id,
+        imageAspectRatioProfileLabel: imageAspectRatioProfile.label,
+        mainAspectRatio: imageAspectRatioProfile.mainAspectRatio,
+        detailAspectRatio: imageAspectRatioProfile.detailAspectRatio,
+        imageResolutionId: imageResolution.id,
+        imageResolutionLabel: imageResolution.label,
+        imageResolutionSummary: imageResolution.summary,
+        providerImageResolution: imageResolution.providerResolution,
         briefFocus: job.briefFocus || "",
         briefDiagnostics: normalizeBriefDiagnostics(job.briefDiagnostics),
         commonRuleProfile: job.commonRuleProfile || "",
@@ -574,7 +659,8 @@ async function persistTasks() {
         output: job.output || null,
         log: trimLog(job.log || ""),
         events: Array.isArray(job.events) ? job.events.slice(-80) : [],
-      })),
+      };
+      }),
   };
   await fs.mkdir(taskRoot, { recursive: true });
   await taskStore.save(payload);
@@ -690,13 +776,48 @@ async function taskPromptFileCandidates(job, dir) {
   return [...new Set([...fromJob, ...fromDisk])];
 }
 
-function buildStructuredBriefInput({ productName = "", targetPlatform = "", outputLanguage = "", suiteRatio = fixedSuiteRatio, briefFocus = "" }) {
+function requireGenerationProfile(value) {
+  const requestedId = text(value);
+  const profile = requestedId ? findGenerationProfile(requestedId) : defaultGenerationProfile;
+  if (profile) return profile;
+  const error = new Error(`未知套图方案“${requestedId}”。请刷新页面后重新选择。`);
+  error.statusCode = 400;
+  error.code = "GENERATION_PROFILE_INVALID";
+  throw error;
+}
+
+function requireImageResolutionProfile(value) {
+  const requestedId = text(value).toLowerCase();
+  const profile = requestedId ? findImageResolutionProfile(requestedId) : defaultImageResolution;
+  if (profile) return profile;
+  const error = new Error(`未知图片清晰度“${requestedId}”。请刷新页面后重新选择。`);
+  error.statusCode = 400;
+  error.code = "IMAGE_RESOLUTION_INVALID";
+  throw error;
+}
+
+function requireImageAspectRatioProfile(value) {
+  const requestedId = text(value).toLowerCase();
+  const profile = requestedId ? findImageAspectRatioProfile(requestedId) : defaultImageAspectRatioProfile;
+  if (profile) return profile;
+  const error = new Error(`未知生图比例“${requestedId}”。请刷新页面后重新选择。`);
+  error.statusCode = 400;
+  error.code = "IMAGE_ASPECT_RATIO_INVALID";
+  throw error;
+}
+
+function buildStructuredBriefInput({ productName = "", targetPlatform = "", outputLanguage = "", generationProfile = defaultGenerationProfile, imageAspectRatioProfile = defaultImageAspectRatioProfile, imageResolution = defaultImageResolution, briefFocus = "" }) {
   return [
     "结构化作图输入：",
     productName ? `产品名称：${productName}` : "",
     targetPlatform ? `目标平台：${targetPlatform}` : "",
     outputLanguage ? `输出语言：${outputLanguage}` : "",
-    suiteRatio ? `套图比例：${suiteRatio}` : "",
+    `套图方案：${generationProfile.id}`,
+    `生图比例方案：${imageAspectRatioProfile.id}`,
+    `套图比例：${imageAspectRatioProfile.summary}`,
+    `主图数量：${generationProfile.mainImageCount}`,
+    `详情页数量：${generationProfile.detailImageCount}`,
+    `图片清晰度：${imageResolution.id}`,
     briefFocus ? `用户作图重点：\n${briefFocus}` : "",
   ].filter(Boolean).join("\n");
 }
@@ -769,7 +890,10 @@ async function handleCreateJob(req, res) {
     const submittedProductName = text(form.get("productName"));
     const submittedTargetPlatform = normalizeTargetPlatform(text(form.get("targetPlatform")));
     const submittedOutputLanguage = normalizeOutputLanguage(text(form.get("outputLanguage")));
-    const suiteRatio = text(form.get("suiteRatio")) || fixedSuiteRatio;
+    const generationProfile = requireGenerationProfile(form.get("generationProfileId"));
+    const imageAspectRatioProfile = requireImageAspectRatioProfile(form.get("imageAspectRatioProfileId"));
+    const imageResolution = requireImageResolutionProfile(form.get("imageResolutionId"));
+    const suiteRatio = imageAspectRatioProfile.summary;
     const shouldExpandBrief = text(form.get("expandBrief")) !== "false";
     if ((!template || typeof template !== "object") && !briefFocus && !submittedProductName) {
       const error = new Error("请填写产品名称、上传需求模板，或在文本框里输入作图重点。");
@@ -797,7 +921,9 @@ async function handleCreateJob(req, res) {
       productName: submittedProductName,
       targetPlatform: submittedTargetPlatform,
       outputLanguage: submittedOutputLanguage,
-      suiteRatio,
+      generationProfile,
+      imageAspectRatioProfile,
+      imageResolution,
       briefFocus,
     });
     const rawBriefText = [templateText, structuredInput].filter(Boolean).join("\n\n");
@@ -820,11 +946,13 @@ async function handleCreateJob(req, res) {
             fallbackProductName,
             referenceNames,
             generationRule,
+            generationProfile,
+            imageAspectRatioProfile,
           }),
           briefSubmitTimeoutMs(),
           "brief expansion timeout",
         ).catch((error) => createBriefFallbackResult({
-          fallback: defaultDemandBrief({ productName: fallbackProductName, rawBriefText, referenceNames, generationRule }),
+          fallback: defaultDemandBrief({ productName: fallbackProductName, rawBriefText, referenceNames, generationRule, generationProfile, imageAspectRatioProfile }),
           source: "safe-fallback",
           reasonCode: "submit_timeout",
           reasonMessage: "提交任务时文本模型处理超时，已使用本地智能模板。",
@@ -850,7 +978,7 @@ async function handleCreateJob(req, res) {
     materialDir = path.join(inputRoot, taskFolderName);
     stagingMaterialDir = path.join(inputRoot, `.staging-${jobId}`);
     outputDir = path.join(outputRoot, taskFolderName);
-  const finalBriefText = expandedBrief || defaultDemandBrief({ productName, rawBriefText, referenceNames, generationRule });
+  const finalBriefText = expandedBrief || defaultDemandBrief({ productName, rawBriefText, referenceNames, generationRule, generationProfile, imageAspectRatioProfile });
   const visibleProductName = extractBriefField(finalBriefText, ["可见展示名", "展示名", "visible product name", "display name"]) || inferVisibleProductName({
     rawBriefText: finalBriefText || rawBriefText,
     productName: submittedProductName || fallbackProductName || productName,
@@ -875,6 +1003,19 @@ async function handleCreateJob(req, res) {
     targetPlatform: extractBriefField(finalBriefText, ["目标平台", "平台", "target platform", "platform"]) || generationRule.targetPlatform,
     outputLanguage: extractBriefField(finalBriefText, ["输出语言", "language"]) || generationRule.outputLanguage,
     suiteRatio,
+    generationProfileId: generationProfile.id,
+    generationProfileLabel: generationProfile.label,
+    generationProfileSummary: generationProfile.summary,
+    mainImageCount: generationProfile.mainImageCount,
+    detailImageCount: generationProfile.detailImageCount,
+    imageAspectRatioProfileId: imageAspectRatioProfile.id,
+    imageAspectRatioProfileLabel: imageAspectRatioProfile.label,
+    mainAspectRatio: imageAspectRatioProfile.mainAspectRatio,
+    detailAspectRatio: imageAspectRatioProfile.detailAspectRatio,
+    imageResolutionId: imageResolution.id,
+    imageResolutionLabel: imageResolution.label,
+    imageResolutionSummary: imageResolution.summary,
+    providerImageResolution: imageResolution.providerResolution,
     briefFocus,
     submissionClient,
     idempotencyKey,
@@ -957,6 +1098,19 @@ async function handleCreateJob(req, res) {
     targetPlatform: generationRule.targetPlatform,
     outputLanguage: generationRule.outputLanguage,
     suiteRatio,
+    generationProfileId: generationProfile.id,
+    generationProfileLabel: generationProfile.label,
+    generationProfileSummary: generationProfile.summary,
+    mainImageCount: generationProfile.mainImageCount,
+    detailImageCount: generationProfile.detailImageCount,
+    imageAspectRatioProfileId: imageAspectRatioProfile.id,
+    imageAspectRatioProfileLabel: imageAspectRatioProfile.label,
+    mainAspectRatio: imageAspectRatioProfile.mainAspectRatio,
+    detailAspectRatio: imageAspectRatioProfile.detailAspectRatio,
+    imageResolutionId: imageResolution.id,
+    imageResolutionLabel: imageResolution.label,
+    imageResolutionSummary: imageResolution.summary,
+    providerImageResolution: imageResolution.providerResolution,
     briefFocus,
     submissionClient,
     idempotencyKey,
@@ -988,7 +1142,7 @@ async function handleCreateJob(req, res) {
     generationRuleMatchedKeywords: generationRule.matchedKeywords,
       status: "queued",
     message: "任务已提交，等待本地工作流启动。",
-    progress: { stage: "planning", message: "任务已提交，正在等待工作流启动。", total: 13, completed: 0, mainCompleted: 0, detailCompleted: 0, retries: 0, backpressureCount: 0, concurrency: 0, updatedAt: createdAt },
+    progress: { stage: "planning", message: "任务已提交，正在等待工作流启动。", total: generationProfile.mainImageCount + generationProfile.detailImageCount, completed: 0, mainCompleted: 0, detailCompleted: 0, retries: 0, backpressureCount: 0, concurrency: 0, updatedAt: createdAt },
     timing: { workflowStartedAt: "", firstPreviewAt: "", firstPreviewElapsedMs: 0 },
     createdAt,
     updatedAt: createdAt,
@@ -1026,9 +1180,23 @@ function createSubmittingJob({ jobId, createdAt, idempotencyKey, submissionClien
     productName: "正在接收任务",
     idempotencyKey,
     submissionClient,
+    generationProfileId: defaultGenerationProfile.id,
+    generationProfileLabel: defaultGenerationProfile.label,
+    generationProfileSummary: defaultGenerationProfile.summary,
+    mainImageCount: defaultGenerationProfile.mainImageCount,
+    detailImageCount: defaultGenerationProfile.detailImageCount,
+    suiteRatio: defaultImageAspectRatioProfile.summary,
+    imageAspectRatioProfileId: defaultImageAspectRatioProfile.id,
+    imageAspectRatioProfileLabel: defaultImageAspectRatioProfile.label,
+    mainAspectRatio: defaultImageAspectRatioProfile.mainAspectRatio,
+    detailAspectRatio: defaultImageAspectRatioProfile.detailAspectRatio,
+    imageResolutionId: defaultImageResolution.id,
+    imageResolutionLabel: defaultImageResolution.label,
+    imageResolutionSummary: defaultImageResolution.summary,
+    providerImageResolution: defaultImageResolution.providerResolution,
     status: "receiving",
     message: "请求已接收，正在校验上传素材。",
-    progress: { stage: "receiving", message: "正在校验上传素材。", total: 13, completed: 0, mainCompleted: 0, detailCompleted: 0, retries: 0, backpressureCount: 0, concurrency: 0, updatedAt: createdAt },
+    progress: { stage: "receiving", message: "正在校验上传素材。", total: defaultGenerationProfile.mainImageCount + defaultGenerationProfile.detailImageCount, completed: 0, mainCompleted: 0, detailCompleted: 0, retries: 0, backpressureCount: 0, concurrency: 0, updatedAt: createdAt },
     timing: { workflowStartedAt: "", firstPreviewAt: "", firstPreviewElapsedMs: 0 },
     createdAt,
     updatedAt: createdAt,
@@ -1165,7 +1333,10 @@ async function handleCreateBriefExpansion(req, res) {
   const submittedProductName = text(form.get("productName"));
   const submittedTargetPlatform = normalizeTargetPlatform(text(form.get("targetPlatform")));
   const submittedOutputLanguage = normalizeOutputLanguage(text(form.get("outputLanguage")));
-  const suiteRatio = text(form.get("suiteRatio")) || fixedSuiteRatio;
+  const generationProfile = requireGenerationProfile(form.get("generationProfileId"));
+  const imageAspectRatioProfile = requireImageAspectRatioProfile(form.get("imageAspectRatioProfileId"));
+  const imageResolution = requireImageResolutionProfile(form.get("imageResolutionId"));
+  const suiteRatio = imageAspectRatioProfile.summary;
   const templateText = template && typeof template === "object" ? await template.text() : "";
   validateBriefInputs({ template, templateText, briefText, briefFocus }, uploadLimits);
   await validateReferenceImages(references, uploadLimits);
@@ -1175,7 +1346,9 @@ async function handleCreateBriefExpansion(req, res) {
     productName: submittedProductName,
     targetPlatform: submittedTargetPlatform,
     outputLanguage: submittedOutputLanguage,
-    suiteRatio,
+    generationProfile,
+    imageAspectRatioProfile,
+    imageResolution,
     briefFocus,
   });
   const rawBriefText = [
@@ -1210,6 +1383,18 @@ async function handleCreateBriefExpansion(req, res) {
       targetPlatform: generationRule.targetPlatform,
       outputLanguage: generationRule.outputLanguage,
       suiteRatio,
+      generationProfileId: generationProfile.id,
+      generationProfileLabel: generationProfile.label,
+      generationProfileSummary: generationProfile.summary,
+      mainImageCount: generationProfile.mainImageCount,
+      detailImageCount: generationProfile.detailImageCount,
+      imageAspectRatioProfileId: imageAspectRatioProfile.id,
+      imageAspectRatioProfileLabel: imageAspectRatioProfile.label,
+      mainAspectRatio: imageAspectRatioProfile.mainAspectRatio,
+      detailAspectRatio: imageAspectRatioProfile.detailAspectRatio,
+      imageResolutionId: imageResolution.id,
+      imageResolutionLabel: imageResolution.label,
+      imageResolutionSummary: imageResolution.summary,
       briefFocus,
       commonRuleName: generationRule.commonRuleName,
       platformRuleName: generationRule.platformRuleName,
@@ -1254,6 +1439,8 @@ async function handleCreateBriefExpansion(req, res) {
     fallbackProductName,
     referenceNames,
     generationRule,
+    generationProfile,
+    imageAspectRatioProfile,
     submissionClient,
   });
   sendJson(res, 202, job);
@@ -1404,8 +1591,16 @@ function directoryCandidates(baseRoot, values) {
     if (!raw) continue;
     const resolved = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(rootDir, raw);
     if (isInside(baseRoot, resolved)) candidates.add(resolved);
-    const named = path.resolve(baseRoot, path.basename(raw));
+    const baseName = path.basename(raw);
+    const named = path.resolve(baseRoot, baseName);
     if (isInside(baseRoot, named)) candidates.add(named);
+
+    // The workflow owns the final directory name and normalizes whitespace to
+    // hyphens.  Keep the API-side task lookup on the same rule and also check
+    // this canonical candidate when recovering records written by older builds.
+    const canonicalName = safeSegment(baseName);
+    const canonical = path.resolve(baseRoot, canonicalName);
+    if (isInside(baseRoot, canonical)) candidates.add(canonical);
   }
   return [...candidates];
 }
@@ -1525,10 +1720,12 @@ async function outputResourceCatalog(outputId) {
   const main = await outputFilesInGroup(outputId, "main", "主图");
   const detail = await outputFilesInGroup(outputId, "detail", "详情页");
   resources.push(...main, ...detail);
+  const output = await describeOutput(outputId);
+  const generationProfile = resolveGenerationProfile(output?.generationProfileId);
 
   const overviewFiles = [
-    { id: "overview/main", filename: "5张主图总览.jpg", archiveName: "拼接图/5张主图总览.jpg" },
-    { id: "overview/detail", filename: "8张详情页总览.jpg", archiveName: "拼接图/8张详情页总览.jpg" },
+    { id: "overview/main", filename: `${generationProfile.mainImageCount}张主图总览.jpg`, archiveName: `拼接图/${generationProfile.mainImageCount}张主图总览.jpg` },
+    { id: "overview/detail", filename: `${generationProfile.detailImageCount}张详情页总览.jpg`, archiveName: `拼接图/${generationProfile.detailImageCount}张详情页总览.jpg` },
     { id: "overview/long", filename: "详情页完整长图.jpg", archiveName: "拼接图/详情页完整长图.jpg" },
   ];
   for (const item of overviewFiles) {
@@ -1595,6 +1792,9 @@ async function runWorkflow(job, lease) {
     job.updatedAt = new Date().toISOString();
     addJobEvent(job, "submitting", "正在检查素材并启动本地工作流。");
     submissionGate.transition(lease.token, "submitting");
+    if (process.env.NODE_ENV !== "test" && !text(process.env.LOCAL_WEB_TEST_WORKFLOW_SCRIPT)) {
+      await requireImageProviderConnectivity();
+    }
     await validateWorkflowInput(job);
     lastDiskStatus = await requireDiskSpace([inputRoot, outputRoot], { minimumBytes: minimumFreeBytes() });
   } catch (error) {
@@ -1762,6 +1962,7 @@ async function handleCancelJob(url, res) {
 
 async function finalizeWorkflowWithoutChild(job, lease, error, detail = {}) {
   job.status = "failed";
+  job.errorCode = text(error?.code) || "WORKFLOW_PREFLIGHT_FAILED";
   job.message = error instanceof Error ? error.message : String(error);
   job.updatedAt = new Date().toISOString();
   addJobEvent(job, "failed", job.message, { productName: job.productName, outputId: job.outputFolderName || job.outputId, ...detail });
@@ -1810,6 +2011,14 @@ async function describeOutput(outputId) {
   const detail = await listImages(path.join(dir, "detail"), outputId, "detail");
   const materialDir = resolveMaterialDir(status?.materialDir || status?.inputDir || sourceMaterialDirFromStatus(status), outputId);
   const matchedJob = [...jobs.values()].find((job) => jobMatchesOutputId(job, outputId));
+  const generationProfile = resolveGenerationProfile(status?.generationProfileId || matchedJob?.generationProfileId);
+  const imageAspectRatioProfile = imageAspectRatioProfileForTask({
+    imageAspectRatioProfileId: status?.imageAspectRatioProfileId || matchedJob?.imageAspectRatioProfileId,
+    suiteRatio: status?.suiteRatio || matchedJob?.suiteRatio,
+  });
+  const imageResolution = imageResolutionProfileForTask({
+    imageResolutionId: status?.imageResolutionId || matchedJob?.imageResolutionId,
+  }, defaultImageResolutionId);
   const submittedAt = text(status?.submittedAt) || matchedJob?.createdAt || stat.birthtime.toISOString();
   const productName = text(status?.productName) || matchedJob?.productName || stripTaskFolderPrefix(outputId);
   const materialExists = await directoryExists(materialDir);
@@ -1819,6 +2028,19 @@ async function describeOutput(outputId) {
     productName,
     displayName: productName,
     taskId: text(status?.taskId) || matchedJob?.taskId || "",
+    generationProfileId: generationProfile.id,
+    generationProfileLabel: generationProfile.label,
+    generationProfileSummary: generationProfile.summary,
+    mainImageCount: generationProfile.mainImageCount,
+    detailImageCount: generationProfile.detailImageCount,
+    suiteRatio: imageAspectRatioProfile.summary,
+    imageAspectRatioProfileId: imageAspectRatioProfile.id,
+    imageAspectRatioProfileLabel: imageAspectRatioProfile.label,
+    mainAspectRatio: imageAspectRatioProfile.mainAspectRatio,
+    detailAspectRatio: imageAspectRatioProfile.detailAspectRatio,
+    imageResolutionId: imageResolution.id,
+    imageResolutionLabel: imageResolution.label,
+    imageResolutionSummary: imageResolution.summary,
     submittedAt,
     submittedAtLocal: text(status?.submittedAtLocal) || matchedJob?.submittedAtLocal || formatBeijingDateTime(submittedAt),
     generationRuleProfile: text(status?.generationRuleProfile) || matchedJob?.generationRuleProfile || "",
@@ -1839,8 +2061,8 @@ async function describeOutput(outputId) {
     files: {
       main,
       detail,
-      mainOverview: await fileUrlIfExists(outputId, "5张主图总览.jpg"),
-      detailOverview: await fileUrlIfExists(outputId, "8张详情页总览.jpg"),
+      mainOverview: await fileUrlIfExists(outputId, `${generationProfile.mainImageCount}张主图总览.jpg`),
+      detailOverview: await fileUrlIfExists(outputId, `${generationProfile.detailImageCount}张详情页总览.jpg`),
       longDetail: await fileUrlIfExists(outputId, "详情页完整长图.jpg"),
       packageZip: await fileUrlIfExists(outputId, "package.zip"),
     },
@@ -2083,6 +2305,8 @@ async function expandDemandBrief(rawBriefText, context) {
     referenceNames: context.referenceNames,
     productImageAnalysis: context.productImageAnalysis,
     generationRule: context.generationRule,
+    generationProfile: context.generationProfile,
+    imageAspectRatioProfile: context.imageAspectRatioProfile,
   });
   // The fallback is deliberately local and editable. It must never be blocked by the
   // stricter model-output quality gate, otherwise a transient provider issue turns
@@ -2328,7 +2552,7 @@ function buildBriefExpansionPrompt(rawBriefText, context, fallback) {
     "每张图必须按“卖点证明矩阵”分配不同产品形态。不要把所有图片都做成同一主体位置、同一背景、同一打开状态或同一静物构图。",
     "用户卖点如果包含风险表达，例如直接装开水、承重强、便宜、功效等，要转成可画面证明的安全表达，并在“风险与禁写”里写清不得虚构数值或过度承诺。",
     "平台规则只控制画面风格、构图密度和平台禁用项；语言规则只控制所有新增可见营销文案的统一语言，两者不能互相覆盖。",
-    "AI 扩写不得擅自改变用户已选择的目标平台、输出语言和套图比例。",
+    "AI 扩写不得擅自改变用户已选择的目标平台、输出语言、套图方案和套图比例。",
     `目标平台策略：${strategy.platform}`,
     `输出语言策略：${strategy.outputLanguage}`,
     `当前产品身份：${productIdentity.label}（${productIdentity.id}，识别置信度：${productIdentity.confidence}）`,
@@ -2377,8 +2601,10 @@ function formatGenerationRuleForBriefPrompt(generationRule) {
   ].filter(Boolean).join("\n");
 }
 
-function defaultDemandBrief({ productName, rawBriefText, referenceNames = [], productImageAnalysis = "", generationRule = null }) {
+function defaultDemandBrief({ productName, rawBriefText, referenceNames = [], productImageAnalysis = "", generationRule = null, generationProfile = defaultGenerationProfile, imageAspectRatioProfile = defaultImageAspectRatioProfile }) {
   const strategy = platformStrategy(rawBriefText, generationRule);
+  const profile = resolveGenerationProfile(generationProfile?.id);
+  const ratioProfile = resolveImageAspectRatioProfile(imageAspectRatioProfile?.id);
   const cleanProductName = safeSegment(inferProductName({ rawBriefText, productName, referenceNames, productImageAnalysis, outputLanguage: strategy.outputLanguage }));
   const visibleProductName = inferVisibleProductName({ rawBriefText, productName: cleanProductName, productImageAnalysis, outputLanguage: strategy.outputLanguage });
   const audience = extractBriefField(rawBriefText, ["人群", "目标人群", "audience"]) || inferAudience({
@@ -2406,6 +2632,7 @@ function defaultDemandBrief({ productName, rawBriefText, referenceNames = [], pr
     rawBriefText,
     productImageAnalysis,
     outputLanguage: strategy.outputLanguage,
+    generationProfile: profile,
   });
   const banned = mergeBriefText(
     extractBriefField(rawBriefText, ["禁用元素", "禁用", "banned elements"]),
@@ -2414,18 +2641,21 @@ function defaultDemandBrief({ productName, rawBriefText, referenceNames = [], pr
   const specs = extractBriefField(rawBriefText, ["规格参数", "规格", "参数", "specs"]) || (strategy.outputLanguage === "English"
     ? "Not provided. Do not invent dimensions, test data, certifications, materials, price, sales volume, or performance claims."
     : "未提供。不得自行编造尺寸、检测数据、认证、材质等级、价格、销量或功效参数。");
-  const generateDetail = extractBriefField(rawBriefText, ["生成详情页", "详情页", "generate detail"]) || "是";
   return `商品作图需求模板
 
 产品名称：${cleanProductName}
 可见展示名：${visibleProductName}
 目标平台：${strategy.platform}
 输出语言：${strategy.outputLanguage}
-套图比例：${fixedSuiteRatio}
+套图方案：${profile.id}
+生图比例方案：${ratioProfile.id}
+套图比例：${ratioProfile.summary}
+主图数量：${profile.mainImageCount}
+详情页数量：${profile.detailImageCount}
 
 人群：${audience}
 类目：${category}
-生成详情页：${generateDetail}
+生成详情页：${profile.detailImageCount > 0 ? "是" : "否"}
 
 核心卖点：
 ${sellingPoints.map((point) => `- ${point}`).join("\n")}
@@ -2504,7 +2734,13 @@ function normalizeExpandedBrief(expanded, fallback, context) {
     productImageAnalysis: context.productImageAnalysis,
     outputLanguage: strategy.outputLanguage,
   }), "产品名称");
-  clean = replaceBriefField(clean, "套图比例", fixedSuiteRatio, "输出语言");
+  const generationProfile = resolveGenerationProfile(context.generationProfile?.id);
+  const imageAspectRatioProfile = resolveImageAspectRatioProfile(context.imageAspectRatioProfile?.id);
+  clean = replaceBriefField(clean, "套图方案", generationProfile.id, "输出语言");
+  clean = replaceBriefField(clean, "生图比例方案", imageAspectRatioProfile.id, "套图方案");
+  clean = replaceBriefField(clean, "套图比例", imageAspectRatioProfile.summary, "生图比例方案");
+  clean = replaceBriefField(clean, "主图数量", String(generationProfile.mainImageCount), "套图比例");
+  clean = replaceBriefField(clean, "详情页数量", String(generationProfile.detailImageCount), "主图数量");
   clean = replaceBriefField(clean, "人群", inferAudience({
     rawBriefText: context.rawBriefText,
     productImageAnalysis: context.productImageAnalysis,
@@ -2527,6 +2763,7 @@ function normalizeExpandedBrief(expanded, fallback, context) {
     productName: context.fallbackProductName || productName,
     productImageAnalysis: context.productImageAnalysis,
     outputLanguage: strategy.outputLanguage,
+    generationProfile,
   };
   const qualityIssues = briefExpansionQualityIssues(clean, validationContext);
   if (qualityIssues.length) {
@@ -2644,6 +2881,7 @@ function inferProductName({ rawBriefText = "", productName = "", referenceNames 
   const strategyLanguage = outputLanguage || platformStrategy(rawBriefText).outputLanguage;
   const source = `${productImageAnalysis}\n${rawBriefText}`;
   if (strategyLanguage === "English") {
+    if (/机械鸭|鸭形(?:机器人|玩具)?|鸭子机器人|duck[- ]?(?:shaped|inspired|robot|toy)|articulated duck/i.test(source)) return "Articulated Duck Robot Toy";
     if (/电动车|自行车|车篮|篮筐|前篮|后篮|骑行|bike basket|bicycle basket/i.test(source)) return "Waterproof E-Bike Basket";
     if (/垃圾袋|trash bag|抽绳|艾草|除臭|防臭/i.test(source)) return "Drawstring Odor-Control Trash Bags";
     if (/鞋|shoe|sneaker|footwear|网面|透气/i.test(source)) return "Black Breathable Mesh Walking Shoes";
@@ -2686,6 +2924,7 @@ function englishDisplayName(productName = "", rawBriefText = "", productImageAna
   const source = `${productName}\n${rawBriefText}\n${productImageAnalysis}`;
   if (/破壁机|搅拌机|料理机|豆浆机|果汁机|榨汁机|blender|mixer|smoothie/i.test(source)) return "High-Speed Blender";
   if (/电动车|自行车|车篮|篮筐|前篮|后篮|骑行|bike basket|bicycle basket/i.test(source)) return "Waterproof E-Bike Basket";
+  if (/机械鸭|鸭形(?:机器人|玩具)?|鸭子机器人|duck[- ]?(?:shaped|inspired|robot|toy)|articulated duck/i.test(source)) return "Articulated Duck Robot Toy";
   if (/ai\s*机器人|机器人|豆包|deepseek|robot|ai companion/i.test(source)) return "AI Companion Robot";
   if (/垃圾袋|抽绳|艾草|除臭|防臭|trash bag/i.test(source)) return "Drawstring Trash Bags";
   if (/雨伞|晴雨伞|折叠伞|umbrella/i.test(source)) return "Folding Umbrella";
@@ -2750,6 +2989,11 @@ function inferAudience({ rawBriefText = "", productImageAnalysis = "", productNa
   }
   if (/垃圾袋|trash bag|抽绳|艾草|除臭|防臭/i.test(source)) return outputLanguage === "English" ? "Household users who need daily kitchen and home cleanup" : "家庭厨房清洁用户、日常厨余处理和高频换袋人群";
   if (/雨伞|伞|umbrella/i.test(source)) return outputLanguage === "English" ? "Commuters and outdoor users who need portable rain and sun protection" : "通勤出行用户、学生和需要晴雨防护的户外人群";
+  if (/机械鸭|鸭形(?:机器人|玩具)?|鸭子机器人|duck[- ]?(?:shaped|inspired|robot|toy)|articulated duck/i.test(source)) {
+    return outputLanguage === "English"
+      ? "Families with children, hands-on toy fans, and gift buyers looking for articulated tabletop play"
+      : "亲子家庭、动手玩具爱好者和关注桌面互动的礼物购买人群";
+  }
   if (/机器人|robot|AI陪伴|智能对话|LED表情|豆包|deepseek/i.test(source)) return outputLanguage === "English" ? "Families with children, desktop gadget fans, and gift buyers looking for AI companionship" : "儿童亲子家庭、桌面潮玩用户和科技礼物购买人群";
   if (/椅|凳|chair|stool/i.test(source)) return outputLanguage === "English" ? "Home office, study, vanity and compact-space users who need mobile seating" : "居家办公、学习书桌、梳妆台和小户型移动座椅用户";
   if (/鞋|shoe|sneaker|footwear/i.test(source)) return outputLanguage === "English" ? "Daily walking, commuting and casual outfit users" : "日常通勤、休闲出行和关注舒适穿搭的人群";
@@ -3040,11 +3284,14 @@ function normalizeBriefKey(value) {
 }
 
 function safeSegment(value) {
-  return String(value || "")
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g, "")
-    .replace(/\s+/g, " ")
+  const normalized = String(value || "")
     .trim()
-    .slice(0, 80) || "未命名商品";
+    .replace(/[\\/:*?"<>|#%{}^~[\]`;]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 80);
+  return normalized || "未命名商品";
 }
 
 function safeFilename(value) {

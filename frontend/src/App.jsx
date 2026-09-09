@@ -22,6 +22,10 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { cachePromptSnapshot, promptSnapshotFromTask, readCachedPromptSnapshot } from "./prompt-cache.js";
+import { captchaImageSource } from "./portal-captcha.js";
+import { planReferenceFileAddition, referenceUploadFeedback } from "./reference-upload.js";
+import { loadReferenceDraft, referenceDraftScope, restoreReferenceDraft, saveReferenceDraft } from "./reference-draft.js";
+import { taskImageCounts } from "./task-progress.js";
 
 const briefPlaceholder = "请输入卖点";
 
@@ -42,12 +46,31 @@ const statusCopy = {
 
 const referenceImageLimit = 5;
 const referenceImageRoles = ["主参考图", "细节图", "结构图", "场景参考"];
-const fixedSuiteRatio = "主图 1:1 / 详情页 9:16";
+const defaultGenerationProfileId = "standard-5-8";
+const defaultImageAspectRatioProfileId = "ecommerce-standard";
+const defaultImageResolutionId = "2k";
+const fallbackGenerationProfiles = [
+  { id: "standard-5-8", label: "标准套图", summary: "5 主图 + 8 详情页", suiteRatio: "主图 1:1 / 详情页 9:16", mainImageCount: 5, detailImageCount: 8 },
+  { id: "compact-1-2", label: "极速验证套图", summary: "1 主图 + 2 详情页", suiteRatio: "主图 1:1 / 详情页 9:16", mainImageCount: 1, detailImageCount: 2 },
+  { id: "compact-2-3", label: "轻量套图", summary: "2 主图 + 3 详情页", suiteRatio: "主图 1:1 / 详情页 9:16", mainImageCount: 2, detailImageCount: 3 },
+  { id: "compact-3-4", label: "核心卖点套图", summary: "3 主图 + 4 详情页", suiteRatio: "主图 1:1 / 详情页 9:16", mainImageCount: 3, detailImageCount: 4 },
+];
+const fallbackImageResolutionProfiles = [
+  { id: "720p", label: "720P 预览", summary: "720P 预览", description: "1K 生成后缩小，生图耗时接近 1K", providerResolution: "1k" },
+  { id: "1k", label: "1K 快速", summary: "1K 快速", description: "供应商原生 1K，适合快速验证", providerResolution: "1k" },
+  { id: "2k", label: "2K 标准", summary: "2K 标准", description: "当前标准交付清晰度", providerResolution: "2k" },
+];
+const fallbackImageAspectRatioProfiles = [
+  { id: "ecommerce-standard", label: "电商标准", summary: "主图 1:1 / 详情页 9:16", description: "方形主图，竖版详情页" },
+  { id: "portrait-main", label: "竖版主图", summary: "主图 3:4 / 详情页 9:16", description: "竖版主图，竖版详情页" },
+];
 const defaultProductForm = {
   productName: "",
   targetPlatform: "国内通用",
   outputLanguage: "简体中文",
-  suiteRatio: fixedSuiteRatio,
+  generationProfileId: defaultGenerationProfileId,
+  imageAspectRatioProfileId: defaultImageAspectRatioProfileId,
+  imageResolutionId: defaultImageResolutionId,
 };
 const platformOptions = [
   { value: "国内通用", label: "国内通用", summary: "丰富多元素" },
@@ -58,8 +81,6 @@ const languageOptions = [
   { value: "简体中文", label: "简体中文" },
   { value: "English", label: "English" },
 ];
-const suiteRatioOptions = [{ value: fixedSuiteRatio, label: "主图1:1 / 详情9:16" }];
-const suiteCountOptions = [{ value: "5 张主图 + 8 张详情页", label: "5主图 + 8详情" }];
 const historyFilterOptions = [
   { value: "all", label: "全部" },
   { value: "active", label: "生成中" },
@@ -85,10 +106,6 @@ function createReferenceImage(file, index) {
   };
 }
 
-function isImageFile(file) {
-  return Boolean(file?.type?.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(file?.name || ""));
-}
-
 function numberedReferenceFilename(image, index) {
   const name = image?.originalName || `图片${index + 1}.png`;
   const role = image?.role || "参考图";
@@ -99,6 +116,39 @@ export function App() {
   const [route, setRoute] = useHashRoute();
   const [outputs, setOutputs] = useState([]);
   const [selectedOutput, setSelectedOutput] = useState(null);
+  const portalMode = isPortalMode();
+  const [portalUser, setPortalUser] = useState(null);
+  const [portalReady, setPortalReady] = useState(!portalMode);
+
+  useEffect(() => {
+    if (!portalMode) return undefined;
+    let mounted = true;
+    const restore = async () => {
+      const token = readPortalAccessToken();
+      if (!token) {
+        if (mounted) setPortalReady(true);
+        return;
+      }
+      try {
+        const response = await portalAuthJson("/portal-auth/me");
+        if (mounted) setPortalUser(response.data ?? response.user ?? null);
+      } catch {
+        clearPortalAccessToken();
+      } finally {
+        if (mounted) setPortalReady(true);
+      }
+    };
+    const expired = () => {
+      clearPortalAccessToken();
+      if (mounted) setPortalUser(null);
+    };
+    window.addEventListener("bge-portal-session-expired", expired);
+    restore();
+    return () => {
+      mounted = false;
+      window.removeEventListener("bge-portal-session-expired", expired);
+    };
+  }, [portalMode]);
 
   async function refreshOutputs(outputId) {
     if (outputId) {
@@ -127,6 +177,29 @@ export function App() {
     }
   }, [route.page, route.outputId]);
 
+  if (portalMode && !portalReady) {
+    return <PortalLoading />;
+  }
+
+  if (portalMode && !portalUser) {
+    return <PortalAccessPage onAuthenticated={setPortalUser} />;
+  }
+
+  const signOut = async () => {
+    try {
+      await portalAuthJson("/portal-auth/logout", { method: "POST" });
+    } catch {
+      // The local Redis entry might already have expired. The browser session
+      // must still be cleared so the next visit cannot reuse a stale token.
+    } finally {
+      clearPortalAccessToken();
+      setPortalUser(null);
+      setOutputs([]);
+      setSelectedOutput(null);
+      setRoute({ page: "home" });
+    }
+  };
+
   if (route.page === "output") {
     return (
       <GalleryPage
@@ -138,6 +211,8 @@ export function App() {
           setRoute({ page: "home" });
           await refreshOutputs();
         }}
+        portalUser={portalUser}
+        onPortalLogout={portalMode ? signOut : undefined}
       />
     );
   }
@@ -149,13 +224,16 @@ export function App() {
       onDeleteOutput={deleteOutput}
       onDeleteTask={deleteTask}
       onViewOutput={(outputId) => setRoute({ page: "output", outputId })}
+      portalUser={portalUser}
+      onPortalLogout={portalMode ? signOut : undefined}
     />
   );
 }
 
-function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask, onViewOutput }) {
+function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask, onViewOutput, portalUser, onPortalLogout }) {
   const [referenceImages, setReferenceImages] = useState([]);
   const referenceImagesRef = useRef([]);
+  const [referenceDraftReady, setReferenceDraftReady] = useState(false);
   const [referenceModalOpen, setReferenceModalOpen] = useState(false);
   const [productForm, setProductForm] = useState(defaultProductForm);
   const [briefText, setBriefText] = useState("");
@@ -180,7 +258,20 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
   const [expansionError, setExpansionError] = useState("");
   const [accessTokenValue, setAccessTokenValue] = useState(() => readInternalAccessToken());
   const [accessMode, setAccessMode] = useState("off");
+  const [generationProfiles, setGenerationProfiles] = useState(fallbackGenerationProfiles);
+  const [imageAspectRatioProfiles, setImageAspectRatioProfiles] = useState(fallbackImageAspectRatioProfiles);
+  const [imageResolutionProfiles, setImageResolutionProfiles] = useState(fallbackImageResolutionProfiles);
   const pendingIdempotencyKey = useRef("");
+  const draftScope = referenceDraftScope(portalUser);
+  const selectedGenerationProfile = generationProfiles.find((profile) => profile.id === productForm.generationProfileId)
+    ?? generationProfiles.find((profile) => profile.id === defaultGenerationProfileId)
+    ?? fallbackGenerationProfiles[0];
+  const selectedImageResolution = imageResolutionProfiles.find((profile) => profile.id === productForm.imageResolutionId)
+    ?? imageResolutionProfiles.find((profile) => profile.id === defaultImageResolutionId)
+    ?? fallbackImageResolutionProfiles[2];
+  const selectedImageAspectRatio = imageAspectRatioProfiles.find((profile) => profile.id === productForm.imageAspectRatioProfileId)
+    ?? imageAspectRatioProfiles.find((profile) => profile.id === defaultImageAspectRatioProfileId)
+    ?? fallbackImageAspectRatioProfiles[0];
 
   const hasProductName = Boolean(productForm.productName.trim());
   const hasBriefInput = Boolean(briefText.trim() || hasProductName);
@@ -207,12 +298,43 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
     if (referenceImages.length) parts.push(`${referenceImages.length} 张参考图`);
     if (briefText.trim()) parts.push("重点需求已填写");
     if (briefSource === "ai-expanded") parts.push("AI扩写模板");
+    if (selectedGenerationProfile?.summary) parts.push(selectedGenerationProfile.summary);
+    if (selectedImageAspectRatio?.summary) parts.push(selectedImageAspectRatio.summary);
+    if (selectedImageResolution?.summary) parts.push(selectedImageResolution.summary);
     return parts.length ? parts.join(" / ") : "上传素材后开始";
-  }, [referenceImages, briefText, briefSource, productForm]);
+  }, [referenceImages, briefText, briefSource, productForm, selectedGenerationProfile, selectedImageAspectRatio, selectedImageResolution]);
 
   useEffect(() => {
     referenceImagesRef.current = referenceImages;
   }, [referenceImages]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setReferenceDraftReady(false);
+    loadReferenceDraft(draftScope)
+      .then((items) => {
+        if (cancelled || referenceImagesRef.current.length) return;
+        const restored = restoreReferenceDraft(items);
+        referenceImagesRef.current = restored;
+        setReferenceImages(restored);
+        if (restored.length) setToastMessage(`已恢复 ${restored.length} 张未提交参考图。`);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setReferenceDraftReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [draftScope]);
+
+  useEffect(() => {
+    if (!referenceDraftReady) return undefined;
+    const timer = window.setTimeout(() => {
+      saveReferenceDraft(draftScope, referenceImages).catch(() => undefined);
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [draftScope, referenceDraftReady, referenceImages]);
 
   useEffect(() => () => {
     referenceImagesRef.current.forEach((image) => URL.revokeObjectURL(image.previewUrl));
@@ -223,7 +345,18 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
     handleRefreshExamples();
     handleRefreshTasks();
     fetchJson("/health")
-      .then((health) => setAccessMode(health.accessMode === "token" ? "token" : "off"))
+      .then((health) => {
+        setAccessMode(health.accessMode === "token" ? "token" : "off");
+        if (Array.isArray(health.generationProfiles) && health.generationProfiles.length) {
+          setGenerationProfiles(health.generationProfiles);
+        }
+        if (Array.isArray(health.imageAspectRatioProfiles) && health.imageAspectRatioProfiles.length) {
+          setImageAspectRatioProfiles(health.imageAspectRatioProfiles);
+        }
+        if (Array.isArray(health.imageResolutionProfiles) && health.imageResolutionProfiles.length) {
+          setImageResolutionProfiles(health.imageResolutionProfiles);
+        }
+      })
       .catch(() => setAccessMode("off"));
   }, []);
 
@@ -404,7 +537,9 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
       productName: detail?.originalProductName || cached?.originalProductName || detail?.productName || snapshot.productName || task.productName || current.productName,
       targetPlatform: normalizeUiPlatform(detail?.targetPlatform || cached?.targetPlatform || task.targetPlatform || current.targetPlatform),
       outputLanguage: normalizeUiLanguage(detail?.outputLanguage || cached?.outputLanguage || task.outputLanguage || current.outputLanguage),
-      suiteRatio: detail?.suiteRatio || cached?.suiteRatio || task.suiteRatio || current.suiteRatio || fixedSuiteRatio,
+      generationProfileId: detail?.generationProfileId || cached?.generationProfileId || task.generationProfileId || current.generationProfileId || defaultGenerationProfileId,
+      imageAspectRatioProfileId: detail?.imageAspectRatioProfileId || cached?.imageAspectRatioProfileId || task.imageAspectRatioProfileId || current.imageAspectRatioProfileId || defaultImageAspectRatioProfileId,
+      imageResolutionId: normalizeUiImageResolution(detail?.imageResolutionId || cached?.imageResolutionId || task.imageResolutionId || current.imageResolutionId),
     }));
     setBriefSource("history");
     setRunState("idle");
@@ -439,24 +574,16 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
   }
 
   function addReferenceFiles(files) {
-    const incoming = Array.from(files ?? []).filter(isImageFile);
-    if (!incoming.length) {
-      setToastMessage("请选择图片文件。");
-      return;
-    }
-    setReferenceImages((current) => {
-      const remaining = referenceImageLimit - current.length;
-      if (remaining <= 0) {
-        setToastMessage(`最多上传 ${referenceImageLimit} 张参考图。`);
-        return current;
-      }
-      const accepted = incoming.slice(0, remaining);
-      if (incoming.length > remaining) {
-        setToastMessage(`最多上传 ${referenceImageLimit} 张参考图，已自动保留前 ${remaining} 张。`);
-      }
-      const created = accepted.map((file, index) => createReferenceImage(file, current.length + index));
-      return [...current, ...created];
-    });
+    const incoming = Array.from(files ?? []);
+    const current = referenceImagesRef.current;
+    const plan = planReferenceFileAddition(current, incoming, referenceImageLimit);
+    setToastMessage(referenceUploadFeedback(plan));
+    if (!plan.accepted.length) return;
+
+    const created = plan.accepted.map((file, index) => createReferenceImage(file, current.length + index));
+    const next = [...current, ...created];
+    referenceImagesRef.current = next;
+    setReferenceImages(next);
     resetMaterialDependentState();
   }
 
@@ -561,7 +688,9 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
       form.append("productName", expansionSnapshot.productForm?.productName?.trim() || "");
       form.append("targetPlatform", expansionSnapshot.productForm?.targetPlatform || defaultProductForm.targetPlatform);
       form.append("outputLanguage", expansionSnapshot.productForm?.outputLanguage || defaultProductForm.outputLanguage);
-      form.append("suiteRatio", expansionSnapshot.productForm?.suiteRatio || fixedSuiteRatio);
+      form.append("generationProfileId", expansionSnapshot.productForm?.generationProfileId || defaultGenerationProfileId);
+      form.append("imageAspectRatioProfileId", expansionSnapshot.productForm?.imageAspectRatioProfileId || defaultImageAspectRatioProfileId);
+      form.append("imageResolutionId", expansionSnapshot.productForm?.imageResolutionId || defaultImageResolutionId);
       form.append("briefFocus", expansionSnapshot.briefText.trim());
       const created = await fetchJson("/api/brief-expansions", { method: "POST", body: form });
       setExpansionJob(created);
@@ -638,6 +767,28 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
   async function handleGenerate() {
     if (!canGenerate) return;
     setError("");
+    setJob({
+      id: "",
+      status: "submitting",
+      message: "正在接收素材并创建任务。",
+      productName: productForm.productName.trim(),
+      generationProfileId: selectedGenerationProfile.id,
+      mainImageCount: selectedGenerationProfile.mainImageCount,
+      detailImageCount: selectedGenerationProfile.detailImageCount,
+      imageAspectRatioProfileId: selectedImageAspectRatio.id,
+      imageAspectRatioProfileLabel: selectedImageAspectRatio.label,
+      mainAspectRatio: selectedImageAspectRatio.mainAspectRatio,
+      detailAspectRatio: selectedImageAspectRatio.detailAspectRatio,
+      imageResolutionId: selectedImageResolution.id,
+      progress: {
+        stage: "receiving",
+        message: "正在接收上传素材。",
+        total: selectedGenerationProfile.mainImageCount + selectedGenerationProfile.detailImageCount,
+        completed: 0,
+        mainCompleted: 0,
+        detailCompleted: 0,
+      },
+    });
     setRunState("submitting");
     setLiveOutput(null);
     try {
@@ -647,7 +798,9 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
       form.append("productName", productForm.productName.trim());
       form.append("targetPlatform", productForm.targetPlatform);
       form.append("outputLanguage", productForm.outputLanguage);
-      form.append("suiteRatio", productForm.suiteRatio);
+      form.append("generationProfileId", productForm.generationProfileId);
+      form.append("imageAspectRatioProfileId", productForm.imageAspectRatioProfileId);
+      form.append("imageResolutionId", productForm.imageResolutionId);
       form.append("briefFocus", briefText.trim());
       form.append("expandBrief", briefSource === "ai-expanded" ? "false" : "true");
       const idempotencyKey = pendingIdempotencyKey.current || createIdempotencyKey();
@@ -662,6 +815,7 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
       if (submitError.statusCode && submitError.statusCode !== 0) pendingIdempotencyKey.current = "";
       setRunState("failed");
       setError(submitError.message);
+      setJob((current) => current ? { ...current, status: "failed", message: submitError.message } : current);
     }
   }
 
@@ -693,16 +847,17 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
   return (
     <main className="app-shell">
       <section className="workspace">
-        <Header currentStatus={currentStatus} />
-        {toastMessage ? <div className="toast-banner">{toastMessage}</div> : null}
+        <Header currentStatus={currentStatus} portalUser={portalUser} onPortalLogout={onPortalLogout} />
+        {toastMessage ? <div className="toast-banner" role="status" aria-live="polite">{toastMessage}</div> : null}
 
         <div className="layout-grid">
           <section className="input-column" aria-label="素材上传">
-            <ReferenceUploadCard
-              images={referenceImages}
-              limit={referenceImageLimit}
-              onOpen={() => setReferenceModalOpen(true)}
-            />
+              <ReferenceUploadCard
+                images={referenceImages}
+                limit={referenceImageLimit}
+                onOpen={() => setReferenceModalOpen(true)}
+                onAddFiles={addReferenceFiles}
+              />
 
             <section className="brief-card compact-brief-card">
               <label className="primary-name-field">
@@ -736,7 +891,13 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
                   {expansionButtonLabel}
                 </button>
               </div>
-              <GenerationOptionControls form={productForm} onChange={updateProductForm} />
+              <GenerationOptionControls
+                form={productForm}
+                profiles={generationProfiles}
+                aspectRatioProfiles={imageAspectRatioProfiles}
+                resolutionProfiles={imageResolutionProfiles}
+                onChange={updateProductForm}
+              />
               {briefSource === "ai-expanded" ? (
                 <p className="brief-source-note">已使用 AI 扩写模板，立即生成时不会再次扩写。</p>
               ) : null}
@@ -757,7 +918,7 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
                 {isBusy ? "生成中" : "立即生成"}
                 <ArrowRight size={18} />
               </button>
-              {accessMode === "token" ? (
+              {!isPortalMode() && accessMode === "token" ? (
                 <label className="access-token-field">
                   <span>内部访问令牌</span>
                   <input
@@ -771,7 +932,7 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
                 </label>
               ) : null}
               {isBusy ? (
-                <button className="danger-button compact-cancel-button" type="button" disabled={runState === "canceling"} onClick={handleCancelJob}>
+                <button className="danger-button compact-cancel-button" type="button" disabled={!job?.id || runState === "canceling"} onClick={handleCancelJob}>
                   {runState === "canceling" ? <Loader2 size={18} className="spin" /> : <X size={18} />}
                   {runState === "canceling" ? "正在停止任务" : "停止当前任务"}
                 </button>
@@ -841,7 +1002,16 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
   );
 }
 
-function GenerationOptionControls({ form, onChange }) {
+function GenerationOptionControls({ form, profiles, aspectRatioProfiles, resolutionProfiles, onChange }) {
+  const selectedProfile = profiles.find((profile) => profile.id === form.generationProfileId)
+    ?? profiles.find((profile) => profile.id === defaultGenerationProfileId)
+    ?? fallbackGenerationProfiles[0];
+  const selectedResolution = resolutionProfiles.find((profile) => profile.id === form.imageResolutionId)
+    ?? resolutionProfiles.find((profile) => profile.id === defaultImageResolutionId)
+    ?? fallbackImageResolutionProfiles[2];
+  const selectedAspectRatio = aspectRatioProfiles.find((profile) => profile.id === form.imageAspectRatioProfileId)
+    ?? aspectRatioProfiles.find((profile) => profile.id === defaultImageAspectRatioProfileId)
+    ?? fallbackImageAspectRatioProfiles[0];
   return (
     <div className="generation-options" aria-label="生成参数">
       <label className="mini-select">
@@ -868,33 +1038,59 @@ function GenerationOptionControls({ form, onChange }) {
         </select>
       </label>
 
-      <label className="mini-select locked">
+      <label className="mini-select">
         <span>生图比例</span>
-        <select value={form.suiteRatio} disabled title="当前版本固定生成此比例">
-          {suiteRatioOptions.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
+        <select
+          value={selectedAspectRatio.id}
+          onChange={(event) => onChange({ imageAspectRatioProfileId: event.target.value })}
+          title={selectedAspectRatio.description}
+        >
+          {aspectRatioProfiles.map((profile) => (
+            <option key={profile.id} value={profile.id}>{profile.summary.replaceAll(" ", "")}</option>
           ))}
         </select>
       </label>
 
-      <label className="mini-select locked">
-        <span>套图数量</span>
-        <select value={suiteCountOptions[0].value} disabled title="当前版本固定生成此数量">
-          {suiteCountOptions.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
+      <label className="mini-select">
+        <span>图片清晰度</span>
+        <select
+          value={selectedResolution.id}
+          onChange={(event) => onChange({ imageResolutionId: event.target.value })}
+          title={selectedResolution.description}
+        >
+          {resolutionProfiles.map((profile) => (
+            <option key={profile.id} value={profile.id}>{profile.label}</option>
           ))}
         </select>
       </label>
+
+      <label className="mini-select suite-count-select">
+        <span>套图数量</span>
+        <select
+          value={selectedProfile.id}
+          onChange={(event) => onChange({ generationProfileId: event.target.value })}
+          title="选择交付数量；不会改变生图比例"
+        >
+          {profiles.map((profile) => (
+            <option key={profile.id} value={profile.id}>{profile.summary.replaceAll(" ", "")}</option>
+          ))}
+        </select>
+      </label>
+      <p className="resolution-help">{selectedResolution.description}</p>
     </div>
   );
 }
 
-function ReferenceUploadCard({ images, limit, onOpen }) {
+function ReferenceUploadCard({ images, limit, onOpen, onAddFiles }) {
   const primary = images.find((image) => image.role === "主参考图") ?? images[0];
   const previewImages = images.slice(0, 4);
+  const { isFileDragging, dropZoneProps } = useFileDropZone(onAddFiles);
 
   return (
-    <section className="upload-card reference-upload-card">
+    <section
+      className={`upload-card reference-upload-card ${isFileDragging ? "is-file-dragging" : ""}`}
+      {...dropZoneProps}
+    >
       <div className="upload-copy">
         <div className="icon-badge"><ImagePlus size={24} /></div>
         <div>
@@ -910,7 +1106,7 @@ function ReferenceUploadCard({ images, limit, onOpen }) {
             </div>
             <div className="reference-trigger-copy">
               <strong>{formatReferenceSummary(images)}</strong>
-              <span>点击管理、继续添加或调整 AI 扩写使用图片</span>
+              <span>点击管理、继续添加，或直接拖拽图片到这里</span>
             </div>
           </>
         ) : (
@@ -918,7 +1114,7 @@ function ReferenceUploadCard({ images, limit, onOpen }) {
             <UploadCloud size={24} />
             <div className="reference-trigger-copy">
               <strong>未选择图片</strong>
-              <span>点击打开参考图管理</span>
+              <span>点击管理，或直接拖拽图片到这里</span>
             </div>
           </>
         )}
@@ -932,6 +1128,13 @@ function ReferenceUploadCard({ images, limit, onOpen }) {
             </button>
           ))}
           {images.length > previewImages.length ? <span className="reference-more">+{images.length - previewImages.length}</span> : null}
+        </div>
+      ) : null}
+      {isFileDragging ? (
+        <div className="reference-drop-overlay" role="status" aria-live="polite">
+          <UploadCloud size={32} />
+          <strong>{images.length < limit ? "松开即可添加参考图" : `已达到 ${limit} 张上限`}</strong>
+          <span>{images.length < limit ? `还可添加 ${limit - images.length} 张图片` : "松开后不会覆盖已有图片"}</span>
         </div>
       ) : null}
     </section>
@@ -950,14 +1153,15 @@ function HistoryRecordsPanel({
   onDeleteRecord,
 }) {
   const recentRecords = records.slice(0, 6);
+  const portalMode = isPortalMode();
 
   return (
     <section className="history-records-card completed-strip recent-strip">
       <div className="history-records-title completed-title">
         <FolderOpen size={18} />
         <div>
-          <strong>历史任务</strong>
-          <small>成品、生成时间、历史提示词和生成状态集中在这里。</small>
+          <strong>{portalMode ? "我的任务" : "历史任务"}</strong>
+          <small>{portalMode ? "这里只显示当前账号提交的作图任务和成品。" : "成品、生成时间、历史提示词和生成状态集中在这里。"}</small>
         </div>
         <div className="history-title-actions">
           <button type="button" onClick={onOpenAll}>
@@ -988,7 +1192,7 @@ function HistoryRecordsPanel({
             />
           </article>
         ))}
-        {!recentRecords.length ? <p>还没有历史任务，提交一次生成后会自动保存。</p> : null}
+        {!recentRecords.length ? <p>{portalMode ? "还没有我的任务，提交一次生成后会自动保存。" : "还没有历史任务，提交一次生成后会自动保存。"}</p> : null}
       </div>
     </section>
   );
@@ -1044,6 +1248,7 @@ function HistoryRecordsModal({
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
+  const portalMode = isPortalMode();
   const counts = useMemo(() => {
     const next = Object.fromEntries(historyFilterOptions.map((option) => [option.value, 0]));
     next.all = records.length;
@@ -1076,7 +1281,7 @@ function HistoryRecordsModal({
       className="modal-layer history-layer"
       role="dialog"
       aria-modal="true"
-      aria-label="历史任务管理"
+      aria-label={portalMode ? "我的任务管理" : "历史任务管理"}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -1084,8 +1289,8 @@ function HistoryRecordsModal({
       <section className="history-modal">
         <header className="modal-header">
           <div>
-            <p className="eyebrow">本地历史记录</p>
-            <h2>历史任务</h2>
+            <p className="eyebrow">{portalMode ? "当前账号" : "本地历史记录"}</p>
+            <h2>{portalMode ? "我的任务" : "历史任务"}</h2>
           </div>
           <div className="preview-tools">
             <button className="secondary-button compact-button" type="button" onClick={onRefresh} disabled={refreshing}>
@@ -1107,7 +1312,7 @@ function HistoryRecordsModal({
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
-          <div className="history-filter-tabs" role="tablist" aria-label="历史任务状态筛选">
+          <div className="history-filter-tabs" role="tablist" aria-label={portalMode ? "我的任务状态筛选" : "历史任务状态筛选"}>
             {historyFilterOptions.map((option) => (
               <button
                 key={option.value}
@@ -1140,6 +1345,7 @@ function HistoryRecordsModal({
                   {record.referenceCount ? <span>{record.referenceCount} 张参考图</span> : null}
                   {record.targetPlatform ? <span>平台：{record.targetPlatform}</span> : null}
                   {record.outputLanguage ? <span>语言：{record.outputLanguage}</span> : null}
+                  {record.imageResolutionLabel ? <span>清晰度：{record.imageResolutionLabel}</span> : null}
                   {record.promptAvailable ? <span>提示词可导入</span> : <span>无完整提示词</span>}
                 </div>
                 {record.briefDiagnostic ? <p className="history-brief-diagnostic">{record.briefDiagnostic}</p> : null}
@@ -1159,7 +1365,7 @@ function HistoryRecordsModal({
           {!filteredRecords.length ? (
             <div className="history-empty-state">
               <FolderOpen size={28} />
-              <strong>没有匹配的历史任务</strong>
+              <strong>{portalMode ? "没有匹配的我的任务" : "没有匹配的历史任务"}</strong>
               <span>换一个关键词或状态筛选再试试。</span>
             </div>
           ) : null}
@@ -1174,6 +1380,7 @@ function ReferenceManagerModal({ images, limit, onAddFiles, onRemove, onUpdate, 
   const [previewId, setPreviewId] = useState(null);
   const previewIndex = images.findIndex((image) => image.id === previewId);
   const previewImage = previewIndex >= 0 ? images[previewIndex] : null;
+  const { isFileDragging, dropZoneProps } = useFileDropZone(onAddFiles);
 
   useEffect(() => {
     if (previewId && previewIndex < 0) setPreviewId(null);
@@ -1182,7 +1389,10 @@ function ReferenceManagerModal({ images, limit, onAddFiles, onRemove, onUpdate, 
   return (
     <>
       <div className="modal-layer" role="dialog" aria-modal="true" aria-label="参考图管理">
-        <section className="reference-modal">
+        <section
+          className={`reference-modal ${isFileDragging ? "is-file-dragging" : ""}`}
+          {...dropZoneProps}
+        >
         <header className="modal-header">
           <div>
             <p className="eyebrow">上传参考图</p>
@@ -1297,10 +1507,18 @@ function ReferenceManagerModal({ images, limit, onAddFiles, onRemove, onUpdate, 
               }}
             />
             <UploadCloud size={30} />
-            <strong>点击添加产品参考图</strong>
-            <span>最多 {limit} 张，支持 png / jpg / webp。</span>
+            <strong>点击或拖拽添加产品参考图</strong>
+            <span>最多 {limit} 张，支持 png / jpg / webp / gif。</span>
           </label>
         )}
+
+        {isFileDragging ? (
+          <div className="reference-drop-overlay modal-drop-overlay" role="status" aria-live="polite">
+            <UploadCloud size={38} />
+            <strong>{canAddMore ? "松开即可添加参考图" : `已达到 ${limit} 张上限`}</strong>
+            <span>{canAddMore ? `新图片将追加到现有列表，还可添加 ${limit - images.length} 张` : "松开后不会覆盖已有图片"}</span>
+          </div>
+        ) : null}
 
         <footer className="reference-modal-footer">
           <p>生成图片会使用这里的全部参考图；AI 扩写默认只使用勾选图片。</p>
@@ -1322,6 +1540,54 @@ function ReferenceManagerModal({ images, limit, onAddFiles, onRemove, onUpdate, 
       ) : null}
     </>
   );
+}
+
+function useFileDropZone(onFiles) {
+  const [isFileDragging, setIsFileDragging] = useState(false);
+  const dragDepth = useRef(0);
+
+  function isFileDrag(event) {
+    return Array.from(event.dataTransfer?.types ?? []).includes("Files");
+  }
+
+  function resetDragState() {
+    dragDepth.current = 0;
+    setIsFileDragging(false);
+  }
+
+  return {
+    isFileDragging,
+    dropZoneProps: {
+      onDragEnter(event) {
+        if (!isFileDrag(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        dragDepth.current += 1;
+        setIsFileDragging(true);
+      },
+      onDragOver(event) {
+        if (!isFileDrag(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      },
+      onDragLeave(event) {
+        if (!isFileDrag(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setIsFileDragging(false);
+      },
+      onDrop(event) {
+        if (!isFileDrag(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const droppedFiles = event.dataTransfer?.files;
+        resetDragState();
+        if (droppedFiles?.length) onFiles(droppedFiles);
+      },
+    },
+  };
 }
 
 function ReferenceImagePreviewModal({ image, index, total, onClose, onPrevious, onNext }) {
@@ -1464,6 +1730,8 @@ function BriefExpansionModal({
               {snapshot?.productForm?.productName ? <span>产品：{snapshot.productForm.productName}</span> : null}
               {snapshot?.productForm?.targetPlatform ? <span>平台：{snapshot.productForm.targetPlatform}</span> : null}
               {snapshot?.productForm?.outputLanguage ? <span>语言：{snapshot.productForm.outputLanguage}</span> : null}
+              {snapshot?.productForm?.imageAspectRatioProfileId ? <span>比例：{(fallbackImageAspectRatioProfiles.find((profile) => profile.id === snapshot.productForm.imageAspectRatioProfileId)?.summary || snapshot.productForm.imageAspectRatioProfileId).replaceAll(" ", "")}</span> : null}
+              {snapshot?.productForm?.imageResolutionId ? <span>清晰度：{normalizeUiImageResolution(snapshot.productForm.imageResolutionId).toUpperCase()}</span> : null}
               <span>{referenceImages.length} 张产品图</span>
               {snapshot?.createdAt ? <span>{formatSnapshotTime(snapshot.createdAt)}</span> : null}
             </div>
@@ -1596,6 +1864,7 @@ function ShowcasePanel({
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [exampleBusyId, setExampleBusyId] = useState("");
   const [exampleError, setExampleError] = useState("");
+  const portalMode = isPortalMode();
   const isBusy = ["receiving", "submitting", "queued", "running", "canceling"].includes(runState);
   const isDone = ["done", "partial"].includes(runState) && Boolean(job?.productName);
   const displayMode = isBusy ? "task" : mode === "completed" && !outputs.length ? "examples" : mode;
@@ -1677,14 +1946,14 @@ function ShowcasePanel({
     <section className="preview-column showcase-column" aria-label="展示中心">
       <div className="preview-header showcase-header">
         <div>
-          <p className="section-kicker">{displayMode === "task" ? "当前任务" : displayMode === "completed" ? "已完成" : "优秀案例"}</p>
+          <p className="section-kicker">{displayMode === "task" ? "当前任务" : displayMode === "completed" ? (portalMode ? "我的作品" : "已完成") : "优秀案例"}</p>
           <h2>{title}</h2>
         </div>
         <div className="showcase-controls">
           {!isBusy ? (
             <div className="mode-switch" role="tablist" aria-label="展示内容切换">
               <button className={displayMode === "completed" ? "active" : ""} type="button" onClick={() => setMode("completed")}>
-                已完成
+                {portalMode ? "我的作品" : "已完成"}
               </button>
               <button className={displayMode === "examples" ? "active" : ""} type="button" onClick={() => setMode("examples")}>
                 优秀案例
@@ -1698,7 +1967,7 @@ function ShowcasePanel({
           )}
 
           {displayMode === "completed" ? (
-            <select value={selectedOutputId} onChange={(event) => setSelectedOutputId(event.target.value)} aria-label="选择已完成商品">
+            <select value={selectedOutputId} onChange={(event) => setSelectedOutputId(event.target.value)} aria-label={portalMode ? "选择我的作品" : "选择已完成商品"}>
               {outputs.map((output) => (
                 <option key={outputKey(output)} value={outputKey(output)}>{outputLabel(output)}</option>
               ))}
@@ -1783,7 +2052,7 @@ function ShowcaseStage({ asset, emptyText, meta, onPrevious, onNext, onPrimary, 
         <ArrowLeft size={20} />
       </button>
       <div className="showcase-image-wrap">
-        <img src={asset.url} alt={asset.label} loading="lazy" />
+        <AssetImage src={asset.url} alt={asset.label} loading="lazy" />
       </div>
       <button className="stage-arrow right" type="button" onClick={onNext} aria-label="下一张">
         <ArrowRight size={20} />
@@ -1816,7 +2085,7 @@ function ExampleGallery({ examples, message, busyId, onPreview, onApply }) {
           return (
             <article className="example-card" key={example.id}>
               <div className="example-cover">
-                {example.cover?.url ? <img src={example.cover.url} alt={example.title} loading="lazy" /> : null}
+                {example.cover?.url ? <AssetImage src={example.cover.url} alt={example.title} loading="lazy" /> : null}
                 <div className="example-overlay">
                   <button type="button" onClick={() => onPreview(example.id)} disabled={isBusy}>
                     {isBusy ? <Loader2 size={16} className="spin" /> : <Eye size={16} />}
@@ -1875,7 +2144,7 @@ function ExamplePreviewModal({ example, busy, onClose, onApply }) {
             <div className="example-image-list original-list">
               {(example.originalImages ?? []).map((image) => (
                 <figure key={image.url}>
-                  <img src={image.url} alt={image.name} loading="lazy" />
+                  <AssetImage src={image.url} alt={image.name} loading="lazy" />
                   <figcaption>{image.name}</figcaption>
                 </figure>
               ))}
@@ -1887,7 +2156,7 @@ function ExamplePreviewModal({ example, busy, onClose, onApply }) {
             <div className="example-image-list result-list">
               {(example.resultImages ?? []).map((image) => (
                 <figure key={image.url}>
-                  <img src={image.url} alt={image.name} loading="lazy" />
+                  <AssetImage src={image.url} alt={image.name} loading="lazy" />
                   <figcaption>{image.kind} · {image.name}</figcaption>
                 </figure>
               ))}
@@ -1910,12 +2179,13 @@ function TaskProgressBoard({ job, liveOutput, onViewOutput }) {
   const main = liveOutput?.files?.main ?? [];
   const detail = liveOutput?.files?.detail ?? [];
   const progress = job?.progress || null;
-  const mainSlots = Array.from({ length: 5 }, (_, index) => ({
+  const { main: mainImageCount, detail: detailImageCount } = taskImageCounts(job);
+  const mainSlots = Array.from({ length: mainImageCount }, (_, index) => ({
     key: `main-${index}`,
     label: `主图 ${index + 1}`,
     file: main[index],
   }));
-  const detailSlots = Array.from({ length: 8 }, (_, index) => ({
+  const detailSlots = Array.from({ length: detailImageCount }, (_, index) => ({
     key: `detail-${index}`,
     label: `详情页 ${index + 1}`,
     file: detail[index],
@@ -1923,6 +2193,10 @@ function TaskProgressBoard({ job, liveOutput, onViewOutput }) {
   const slots = [...mainSlots, ...detailSlots];
   const completed = Math.max(slots.filter((slot) => slot.file).length, progress?.completed || 0);
   const isComplete = completed >= slots.length || liveOutput?.status === "已完成";
+  const taskStatus = job?.status || "";
+  const canViewOutput = Boolean(job?.output?.id || job?.outputId || job?.outputFolderName || job?.productName)
+    && (isComplete || ["done", "partial"].includes(taskStatus));
+  const isTerminalFailure = ["failed", "cancelled", "interrupted"].includes(taskStatus);
 
   return (
     <section className="task-board">
@@ -1932,19 +2206,21 @@ function TaskProgressBoard({ job, liveOutput, onViewOutput }) {
           <h3>{completed} / {slots.length} 张</h3>
           <p className="task-progress-message">{progress?.message || job?.message || "正在准备生成任务。"}</p>
         </div>
-        {isComplete && (job?.output?.id || job?.outputId || job?.outputFolderName || job?.productName) ? (
+        {canViewOutput ? (
           <button className="secondary-button" type="button" onClick={() => onViewOutput(job.output?.id || job.outputId || job.outputFolderName || job.productName)}>
             <Eye size={17} />
             进入详情页
           </button>
+        ) : isTerminalFailure ? (
+          <span className="task-pill">{statusCopy[taskStatus] || "任务已停止"}</span>
         ) : (
           <span className="task-pill"><Loader2 size={15} className="spin" />生成中</span>
         )}
       </div>
       {progress ? (
         <div className="task-progress-meta" aria-live="polite">
-          <span>主图 {progress.mainCompleted || 0}/5</span>
-          <span>详情页 {progress.detailCompleted || 0}/8</span>
+          <span>主图 {Math.min(mainImageCount, progress.mainCompleted || 0)}/{mainImageCount}</span>
+          <span>详情页 {Math.min(detailImageCount, progress.detailCompleted || 0)}/{detailImageCount}</span>
           {progress.firstPreviewElapsedMs ? <span>首图 {Math.max(1, Math.round(progress.firstPreviewElapsedMs / 1000))} 秒可看</span> : null}
           {progress.concurrency ? <span>并发 {progress.concurrency}</span> : null}
           {progress.backpressureCount ? <span>已自动限流恢复 {progress.backpressureCount} 次</span> : null}
@@ -1955,7 +2231,7 @@ function TaskProgressBoard({ job, liveOutput, onViewOutput }) {
         {slots.map((slot, index) => (
           <article className={slot.file ? "task-slot done" : "task-slot"} key={slot.key}>
             {slot.file ? (
-              <img src={slot.file.url} alt={slot.file.name} loading="lazy" />
+              <AssetImage src={slot.file.url} alt={slot.file.name} loading="lazy" />
             ) : (
               <div className="slot-placeholder">
                 {index === completed ? <Loader2 size={18} className="spin" /> : null}
@@ -1969,7 +2245,7 @@ function TaskProgressBoard({ job, liveOutput, onViewOutput }) {
   );
 }
 
-function GalleryPage({ output, onBack, onRefresh, onDelete }) {
+function GalleryPage({ output, onBack, onRefresh, onDelete, portalUser, onPortalLogout }) {
   const [tab, setTab] = useState("all");
   const [deleting, setDeleting] = useState(false);
   const [downloadOpen, setDownloadOpen] = useState(false);
@@ -2032,9 +2308,12 @@ function GalleryPage({ output, onBack, onRefresh, onDelete }) {
     setDownloading(true);
     setDownloadError("");
     try {
-      const response = await fetch(`/api/outputs/${encodeURIComponent(currentOutputId)}/download`, {
+      const headers = new Headers({ "Content-Type": "application/json" });
+      const accessToken = readActiveAccessToken();
+      if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
+      const response = await fetch(workbenchApiUrl(`/api/outputs/${encodeURIComponent(currentOutputId)}/download`), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ items: [...selectedDownloadIds] }),
       });
       if (!response.ok) {
@@ -2065,6 +2344,7 @@ function GalleryPage({ output, onBack, onRefresh, onDelete }) {
             {output?.submittedAtLocal ? <small className="gallery-time">提交时间：{output.submittedAtLocal}</small> : null}
           </div>
           <div className="gallery-actions">
+            {portalUser ? <PortalUserBar user={portalUser} onLogout={onPortalLogout} /> : null}
             <button className="ghost-button" type="button" onClick={onRefresh}>
               <RefreshCw size={18} />
               刷新
@@ -2112,7 +2392,7 @@ function GalleryPage({ output, onBack, onRefresh, onDelete }) {
               {visibleAssets.map((asset) => (
                 <article className={`image-card ${asset.layout}`} key={asset.id}>
                   <button className="image-preview-trigger" type="button" onClick={() => setPreviewAssetId(asset.id)}>
-                    <img src={asset.url} alt={asset.label} loading="lazy" />
+                    <AssetImage src={asset.url} alt={asset.label} loading="lazy" />
                   </button>
                   <div className="image-card-body">
                     <div>
@@ -2124,10 +2404,10 @@ function GalleryPage({ output, onBack, onRefresh, onDelete }) {
                         <Eye size={15} />
                         预览
                       </button>
-                      <a href={asset.url} download={asset.filename}>
+                      <AssetDownloadLink src={asset.url} filename={asset.filename}>
                         <Download size={15} />
                         下载
-                      </a>
+                      </AssetDownloadLink>
                     </div>
                   </div>
                 </article>
@@ -2169,13 +2449,15 @@ function GalleryPage({ output, onBack, onRefresh, onDelete }) {
 }
 
 function buildGalleryAssets(output) {
+  const mainCount = Number(output.mainImageCount) || (output.files.main ?? []).length;
+  const detailCount = Number(output.detailImageCount) || (output.files.detail ?? []).length;
   const main = (output.files.main ?? []).map((file, index) => ({
     id: `main/${file.name}`,
     group: "main",
     typeLabel: "主图",
     label: stripImageExtension(file.name) || `主图 ${index + 1}`,
     filename: file.name,
-    url: file.url,
+    url: portalMediaUrl(file.url),
     layout: "square",
   }));
   const detail = (output.files.detail ?? []).map((file, index) => ({
@@ -2184,7 +2466,7 @@ function buildGalleryAssets(output) {
     typeLabel: "详情页",
     label: stripImageExtension(file.name) || `详情页 ${index + 1}`,
     filename: file.name,
-    url: file.url,
+    url: portalMediaUrl(file.url),
     layout: "tall",
   }));
   const overview = [
@@ -2192,18 +2474,18 @@ function buildGalleryAssets(output) {
       id: "overview/main",
       group: "overview",
       typeLabel: "拼接图",
-      label: "5张主图总览",
-      filename: "5张主图总览.jpg",
-      url: output.files.mainOverview,
+      label: `${mainCount}张主图总览`,
+      filename: `${mainCount}张主图总览.jpg`,
+      url: portalMediaUrl(output.files.mainOverview),
       layout: "overview",
     },
     output.files.detailOverview && {
       id: "overview/detail",
       group: "overview",
       typeLabel: "拼接图",
-      label: "8张详情页总览",
-      filename: "8张详情页总览.jpg",
-      url: output.files.detailOverview,
+      label: `${detailCount}张详情页总览`,
+      filename: `${detailCount}张详情页总览.jpg`,
+      url: portalMediaUrl(output.files.detailOverview),
       layout: "overview",
     },
     output.files.longDetail && {
@@ -2212,7 +2494,7 @@ function buildGalleryAssets(output) {
       typeLabel: "拼接长图",
       label: "详情页完整长图",
       filename: "详情页完整长图.jpg",
-      url: output.files.longDetail,
+      url: portalMediaUrl(output.files.longDetail),
       layout: "long",
     },
   ].filter(Boolean);
@@ -2259,7 +2541,7 @@ function DownloadPanel({ assets, selectedIds, downloading, error, onClose, onTog
                     checked={selectedIds.has(asset.id)}
                     onChange={() => onToggle(asset.id)}
                   />
-                  <img src={asset.url} alt="" loading="lazy" />
+                  <AssetImage src={asset.url} alt="" loading="lazy" />
                   <span>{asset.label}</span>
                   <small>{asset.typeLabel}</small>
                 </label>
@@ -2291,10 +2573,10 @@ function ImagePreviewModal({ asset, index, total, onClose, onPrevious, onNext })
             <h2>{asset.label}</h2>
           </div>
           <div className="preview-tools">
-            <a href={asset.url} download={asset.filename}>
+            <AssetDownloadLink src={asset.url} filename={asset.filename}>
               <Download size={17} />
               下载当前图
-            </a>
+            </AssetDownloadLink>
             <button className="icon-button" type="button" onClick={onClose} aria-label="关闭">
               <X size={18} />
             </button>
@@ -2304,13 +2586,99 @@ function ImagePreviewModal({ asset, index, total, onClose, onPrevious, onNext })
           <button className="preview-nav left" type="button" onClick={onPrevious} aria-label="上一张">
             <ArrowLeft size={22} />
           </button>
-          <img src={asset.url} alt={asset.label} />
+          <AssetImage src={asset.url} alt={asset.label} />
           <button className="preview-nav right" type="button" onClick={onNext} aria-label="下一张">
             <ArrowRight size={22} />
           </button>
         </div>
       </section>
     </div>
+  );
+}
+
+const transparentImage = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+
+function AssetImage({ src, alt, ...props }) {
+  const portalMode = isPortalMode();
+  const [blobUrl, setBlobUrl] = useState(portalMode ? "" : String(src || ""));
+  const [loadError, setLoadError] = useState("");
+
+  useEffect(() => {
+    const rawUrl = String(src || "");
+    if (!portalMode) {
+      setBlobUrl(rawUrl);
+      setLoadError("");
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    let active = true;
+    let currentBlobUrl = "";
+    setBlobUrl("");
+    setLoadError("");
+
+    fetchPortalAsset(rawUrl, controller.signal)
+      .then((response) => response.blob())
+      .then((blob) => {
+        if (!blob.type.startsWith("image/")) throw new Error("成品接口未返回图片数据。");
+        currentBlobUrl = URL.createObjectURL(blob);
+        if (active) setBlobUrl(currentBlobUrl);
+      })
+      .catch((error) => {
+        if (active && error?.name !== "AbortError") {
+          setLoadError("图片加载失败，请点击刷新后重试。");
+        }
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+      if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
+    };
+  }, [portalMode, src]);
+
+  return (
+    <img
+      {...props}
+      src={portalMode ? (blobUrl || transparentImage) : String(src || transparentImage)}
+      alt={alt}
+      aria-busy={portalMode && !blobUrl ? "true" : undefined}
+      title={loadError || props.title}
+    />
+  );
+}
+
+function AssetDownloadLink({ src, filename, children }) {
+  const portalMode = isPortalMode();
+  const [downloading, setDownloading] = useState(false);
+  const [error, setError] = useState("");
+
+  const download = async (event) => {
+    if (!portalMode) return;
+    event.preventDefault();
+    if (downloading) return;
+    setDownloading(true);
+    setError("");
+    try {
+      const response = await fetchPortalAsset(src);
+      downloadBlob(await response.blob(), filename);
+    } catch {
+      setError("下载失败，请刷新页面后重试。");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <a
+      href={src}
+      download={filename}
+      onClick={download}
+      aria-busy={downloading || undefined}
+      title={error || (downloading ? "正在准备下载…" : undefined)}
+    >
+      {children}
+    </a>
   );
 }
 
@@ -2412,6 +2780,8 @@ function createHistoryRecord({ task = null, output = null }) {
     promptLength: task?.promptLength || 0,
     targetPlatform: task?.targetPlatform || output?.targetPlatform ? normalizeUiPlatform(task?.targetPlatform || output?.targetPlatform) : "",
     outputLanguage: task?.outputLanguage || output?.outputLanguage ? normalizeUiLanguage(task?.outputLanguage || output?.outputLanguage) : "",
+    imageResolutionId: task?.imageResolutionId || output?.imageResolutionId || "",
+    imageResolutionLabel: task?.imageResolutionLabel || output?.imageResolutionLabel || "",
     generationRuleName: task?.generationRuleName || output?.generationRuleName || "",
     briefDiagnostic: formatBriefDiagnostic(task?.briefDiagnostics, task?.briefFallbackReason),
   };
@@ -2530,7 +2900,162 @@ function sanitizeCaseTemplate(templateText) {
     .trim();
 }
 
-function Header({ currentStatus }) {
+function PortalLoading() {
+  return (
+    <main className="portal-access-shell">
+      <section className="portal-access-card portal-loading-card">
+        <Loader2 className="spin" size={28} />
+        <strong>正在检查本次登录状态…</strong>
+      </section>
+    </main>
+  );
+}
+
+function PortalAccessPage({ onAuthenticated }) {
+  const [mode, setMode] = useState("login");
+  const [captcha, setCaptcha] = useState({ enabled: false, uuid: "", img: "" });
+  const [form, setForm] = useState({ username: "", nickName: "", password: "", confirmPassword: "", code: "" });
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const refreshCaptcha = async () => {
+    try {
+      const response = await fetch("/captchaImage", { cache: "no-store" });
+      const data = await response.json();
+      setCaptcha({
+        enabled: Boolean(data.captchaEnabled),
+        uuid: data.uuid || "",
+        img: captchaImageSource(data.img),
+      });
+    } catch {
+      setError("验证码服务暂时不可用，请确认本机服务已启动。");
+    }
+  };
+
+  useEffect(() => {
+    refreshCaptcha();
+  }, []);
+
+  const update = (field, value) => setForm((current) => ({ ...current, [field]: value }));
+  const switchMode = (nextMode) => {
+    setMode(nextMode);
+    setMessage("");
+    setError("");
+    setForm((current) => ({ ...current, code: "", confirmPassword: nextMode === "login" ? "" : current.confirmPassword }));
+    refreshCaptcha();
+  };
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setSubmitting(true);
+    setMessage("");
+    setError("");
+    try {
+      if (mode === "register") {
+        await portalAuthJson("/portal-auth/register", {
+          method: "POST",
+          body: JSON.stringify({ ...form, uuid: captcha.uuid }),
+        });
+        setMessage("账号已创建。请使用刚设置的用户名和密码登录。");
+        setMode("login");
+        setForm((current) => ({ ...current, password: "", confirmPassword: "", code: "" }));
+        await refreshCaptcha();
+        return;
+      }
+      const response = await portalAuthJson("/portal-auth/login", {
+        method: "POST",
+        body: JSON.stringify({
+          username: form.username,
+          password: form.password,
+          code: form.code,
+          uuid: captcha.uuid,
+        }),
+      });
+      const token = response.token || "";
+      if (!token) throw new Error("登录服务未返回有效会话，请重试。");
+      writePortalAccessToken(token);
+      onAuthenticated(response.user ?? response.data ?? null);
+    } catch (requestError) {
+      setError(requestError.message || "操作未完成，请重试。");
+      setForm((current) => ({ ...current, code: "" }));
+      await refreshCaptcha();
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <main className="portal-access-shell">
+      <section className="portal-access-card">
+        <div className="portal-access-brand">
+          <div className="brand-mark"><Sparkles size={22} strokeWidth={2.4} /></div>
+          <div>
+            <p className="eyebrow">自动化电商图</p>
+            <h1>用户作图门户</h1>
+          </div>
+        </div>
+        <p className="portal-access-copy">注册后可创建作图任务、查看自己的作品，并浏览项目精选案例。其他账号的任务和素材不会显示给你。</p>
+        <div className="portal-mode-switch" role="tablist" aria-label="登录或注册">
+          <button className={mode === "login" ? "active" : ""} type="button" onClick={() => switchMode("login")}>登录</button>
+          <button className={mode === "register" ? "active" : ""} type="button" onClick={() => switchMode("register")}>注册账号</button>
+        </div>
+        <form className="portal-access-form" onSubmit={submit}>
+          <label>
+            <span>用户名</span>
+            <input value={form.username} autoComplete="username" placeholder="4 至 20 位字母、数字或下划线" onChange={(event) => update("username", event.target.value)} required />
+          </label>
+          {mode === "register" ? (
+            <label>
+              <span>显示昵称</span>
+              <input value={form.nickName} autoComplete="nickname" placeholder="用于工作台右上角显示" onChange={(event) => update("nickName", event.target.value)} required />
+            </label>
+          ) : null}
+          <label>
+            <span>密码</span>
+            <input type="password" value={form.password} autoComplete={mode === "login" ? "current-password" : "new-password"} placeholder="6 至 32 位" onChange={(event) => update("password", event.target.value)} required />
+          </label>
+          {mode === "register" ? (
+            <label>
+              <span>确认密码</span>
+              <input type="password" value={form.confirmPassword} autoComplete="new-password" placeholder="再次输入密码" onChange={(event) => update("confirmPassword", event.target.value)} required />
+            </label>
+          ) : null}
+          {captcha.enabled ? (
+            <label className="portal-captcha-field">
+              <span>验证码</span>
+              <div>
+                <input value={form.code} autoComplete="off" placeholder="输入图片中的字符" onChange={(event) => update("code", event.target.value)} required />
+                <button type="button" className="captcha-image-button" onClick={refreshCaptcha} title="点击更换验证码">
+                  {captcha.img ? <img src={captcha.img} alt="验证码，点击更换" /> : "换一张"}
+                </button>
+              </div>
+            </label>
+          ) : null}
+          {error ? <p className="error-text">{error}</p> : null}
+          {message ? <p className="portal-access-message">{message}</p> : null}
+          <button className="generate-button portal-submit" type="submit" disabled={submitting}>
+            {submitting ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
+            {submitting ? "正在处理" : mode === "login" ? "进入作图工作台" : "创建账号"}
+          </button>
+        </form>
+        <p className="portal-access-note">这是本机内测账号体系，不提供短信、邮箱或密码找回。请妥善保存你的密码。</p>
+      </section>
+    </main>
+  );
+}
+
+function PortalUserBar({ user, onLogout }) {
+  if (!user) return null;
+  return (
+    <div className="portal-user-bar">
+      <span title={user.username}>{user.nickName || user.username}</span>
+      <button type="button" onClick={onLogout}>退出</button>
+    </div>
+  );
+}
+
+function Header({ currentStatus, portalUser, onPortalLogout }) {
   return (
     <header className="topbar">
       <div className="brand-mark">
@@ -2540,9 +3065,12 @@ function Header({ currentStatus }) {
         <p className="eyebrow">自动化电商图</p>
         <h1>本地商品图工作台</h1>
       </div>
-      <div className={`status-pill status-${currentStatus}`}>
-        {["receiving", "submitting", "queued", "running", "canceling"].includes(currentStatus) ? <Loader2 size={16} className="spin" /> : <CheckCircle2 size={16} />}
-        {statusCopy[currentStatus] || currentStatus}
+      <div className="header-actions">
+        {portalUser ? <PortalUserBar user={portalUser} onLogout={onPortalLogout} /> : null}
+        <div className={`status-pill status-${currentStatus}`}>
+          {["receiving", "submitting", "queued", "running", "canceling"].includes(currentStatus) ? <Loader2 size={16} className="spin" /> : <CheckCircle2 size={16} />}
+          {statusCopy[currentStatus] || currentStatus}
+        </div>
       </div>
     </header>
   );
@@ -2584,23 +3112,32 @@ function normalizeUiLanguage(value) {
   return languageOptions.some((option) => option.value === clean) ? clean : defaultProductForm.outputLanguage;
 }
 
+function normalizeUiImageResolution(value) {
+  const clean = String(value || "").trim().toLowerCase();
+  return fallbackImageResolutionProfiles.some((option) => option.id === clean) ? clean : defaultImageResolutionId;
+}
+
 async function fetchJson(url, options) {
   let response;
   const requestOptions = { ...(options || {}) };
   const headers = new Headers(requestOptions.headers);
-  const accessToken = readInternalAccessToken();
+  const accessToken = readActiveAccessToken();
   if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
   requestOptions.headers = headers;
   try {
-    response = await fetch(url, requestOptions);
+    response = await fetch(workbenchApiUrl(url), requestOptions);
   } catch (error) {
-    const networkError = new Error("本地后端服务未连接（8787）。请重新双击“一键启动项目.bat”，并保持启动窗口运行。", { cause: error });
+    const networkError = new Error("本地作图服务未连接。请重新启动项目后再试。", { cause: error });
     networkError.statusCode = 0;
     throw networkError;
   }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const apiError = new Error(data.error || `请求失败：${response.status}`);
+    if (isPortalMode() && response.status === 401) {
+      clearPortalAccessToken();
+      window.dispatchEvent(new Event("bge-portal-session-expired"));
+    }
+    const apiError = new Error(data.error || data.msg || `请求失败：${response.status}`);
     apiError.statusCode = response.status;
     apiError.code = data.code || "";
     apiError.activeJobId = data.activeJobId || "";
@@ -2611,6 +3148,70 @@ async function fetchJson(url, options) {
 }
 
 const internalAccessTokenKey = "bge-local-web-access-token";
+const portalAccessTokenKey = "bge-portal-access-token";
+
+function isPortalMode() {
+  return typeof window !== "undefined" && window.location.pathname.startsWith("/portal");
+}
+
+function workbenchApiUrl(url) {
+  return isPortalMode() ? `/portal-api${url}` : url;
+}
+
+function portalMediaUrl(url) {
+  const value = String(url || "");
+  if (!isPortalMode()) return value;
+  if (value.startsWith("/portal-api/outputs/")) {
+    return value.replace("/portal-api/outputs/", "/portal-media/o/");
+  }
+  if (value.startsWith("/portal-api/example-assets/")) {
+    return value.replace("/portal-api/example-assets/", "/portal-media/e/");
+  }
+  return value;
+}
+
+async function fetchPortalAsset(url, signal) {
+  const target = portalMediaUrl(url);
+  if (!target) throw new Error("没有可读取的图片地址。");
+  const headers = new Headers();
+  const token = readActiveAccessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(target, {
+    headers,
+    signal,
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  const mediaType = String(response.headers.get("content-type") || "").split(";", 1)[0].toLowerCase();
+  if (!response.ok || !mediaType.startsWith("image/")) {
+    throw new Error("成品图片请求失败。");
+  }
+  return response;
+}
+
+function readActiveAccessToken() {
+  return isPortalMode() ? readPortalAccessToken() : readInternalAccessToken();
+}
+
+async function portalAuthJson(path, options) {
+  const requestOptions = { ...(options || {}) };
+  const headers = new Headers(requestOptions.headers);
+  if (requestOptions.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  const token = readPortalAccessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  requestOptions.headers = headers;
+  let response;
+  try {
+    response = await fetch(path, requestOptions);
+  } catch (error) {
+    throw new Error("本机认证服务未连接，请确认项目已经启动。", { cause: error });
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || (data.code != null && Number(data.code) !== 200)) {
+    throw new Error(data.msg || data.error || `请求失败：${response.status}`);
+  }
+  return data;
+}
 
 function readInternalAccessToken() {
   try {
@@ -2626,6 +3227,26 @@ function writeInternalAccessToken(value) {
     if (clean) window.sessionStorage.setItem(internalAccessTokenKey, clean);
     else window.sessionStorage.removeItem(internalAccessTokenKey);
   } catch {}
+}
+
+function readPortalAccessToken() {
+  try {
+    return window.sessionStorage.getItem(portalAccessTokenKey) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writePortalAccessToken(value) {
+  try {
+    const clean = String(value || "").trim();
+    if (clean) window.sessionStorage.setItem(portalAccessTokenKey, clean);
+    else window.sessionStorage.removeItem(portalAccessTokenKey);
+  } catch {}
+}
+
+function clearPortalAccessToken() {
+  writePortalAccessToken("");
 }
 
 function createIdempotencyKey() {

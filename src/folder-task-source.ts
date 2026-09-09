@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { BrandProfile, ProductTask, TaskSource, TaskStatus } from "./types.ts";
 import { ensureDir, fileExists, safeSegment, writeJson } from "./fs-utils.ts";
+import { resolveGenerationProfile } from "./generation-profiles.mjs";
+import { imageAspectRatioProfileForTask } from "./image-aspect-ratio-profiles.mjs";
 
 const IMAGE_PATTERN = /\.(png|jpe?g|webp)$/i;
 const TASK_METADATA_FILE = "任务信息.json";
@@ -65,6 +67,9 @@ export class FolderTaskSource implements TaskSource {
     const tasks: ProductTask[] = [];
     for (const { productName, images, materialDir } of groups) {
       const metadata = await readOptionalMetadata(materialDir, productName);
+      const generationProfile = resolveGenerationProfile(metadata.generationProfileId);
+      const imageAspectRatioProfile = imageAspectRatioProfileForTask(metadata);
+      const generateDetail = metadata.generateDetail && generationProfile.detailImageCount > 0;
       const finalProductName = metadata.productName || productName;
       const folderName = path.basename(materialDir);
       const sku = safeSegment(metadata.outputFolderName || metadata.inputFolderName || (metadata.taskId ? folderName : finalProductName));
@@ -100,7 +105,11 @@ export class FolderTaskSource implements TaskSource {
         referenceKeywords: metadata.referenceKeywords,
         notes: metadata.notes,
         briefPath: metadata.briefPath,
-        suiteRatio: metadata.suiteRatio,
+        suiteRatio: imageAspectRatioProfile.summary,
+        generationProfileId: generationProfile.id,
+        imageAspectRatioProfileId: imageAspectRatioProfile.id,
+        imageResolutionId: normalizeImageResolutionId(metadata.imageResolutionId),
+        detailImageCount: generateDetail ? generationProfile.detailImageCount : 0,
         briefFocus: metadata.briefFocus,
         commonRuleProfile: metadata.commonRuleProfile,
         commonRuleName: metadata.commonRuleName,
@@ -130,9 +139,9 @@ export class FolderTaskSource implements TaskSource {
         generationRuleReason: metadata.generationRuleReason,
         generationRuleText: metadata.generationRuleText,
         generationRuleMatchedKeywords: metadata.generationRuleMatchedKeywords,
-        mainImageCount: 5,
-        generateDetail: metadata.generateDetail,
-        imageRatio: "1:1"
+        mainImageCount: generationProfile.mainImageCount,
+        generateDetail,
+        imageRatio: imageAspectRatioProfile.mainAspectRatio
       });
       if (tasks.length >= limit) break;
     }
@@ -158,6 +167,11 @@ export class FolderTaskSource implements TaskSource {
       targetPlatform: task.targetPlatform ?? previous.targetPlatform ?? "",
       outputLanguage: task.outputLanguage ?? previous.outputLanguage ?? "",
       suiteRatio: task.suiteRatio ?? previous.suiteRatio ?? "",
+      generationProfileId: task.generationProfileId ?? previous.generationProfileId ?? "",
+      imageAspectRatioProfileId: task.imageAspectRatioProfileId ?? previous.imageAspectRatioProfileId ?? "",
+      imageResolutionId: task.imageResolutionId ?? previous.imageResolutionId ?? "",
+      detailImageCount: task.detailImageCount ?? previous.detailImageCount ?? 0,
+      mainImageCount: task.mainImageCount ?? previous.mainImageCount ?? 5,
       briefFocus: task.briefFocus ?? previous.briefFocus ?? "",
       inputFolderName: task.inputFolderName ?? previous.inputFolderName ?? path.basename(task.materialDir),
       outputFolderName: task.outputFolderName ?? previous.outputFolderName ?? task.sku,
@@ -275,6 +289,28 @@ async function readOptionalMetadata(inputDir: string, productName: string) {
     notes: text(metadata.notes ?? metadata["特殊要求"] ?? metadata["备注"]) || markdown.notes,
     briefPath: markdown.briefPath,
     suiteRatio: text(taskMetadata.suiteRatio ?? metadata.suiteRatio ?? metadata["套图比例"]) || markdown.suiteRatio,
+    generationProfileId: text(
+      taskMetadata.generationProfileId ??
+      taskMetadata.generationProfile ??
+      metadata.generationProfileId ??
+      metadata.generationProfile ??
+      metadata["套图方案"]
+    ) || markdown.generationProfileId,
+    imageAspectRatioProfileId: text(
+      taskMetadata.imageAspectRatioProfileId ??
+      taskMetadata.imageAspectRatioProfile ??
+      metadata.imageAspectRatioProfileId ??
+      metadata.imageAspectRatioProfile ??
+      metadata["生图比例方案"]
+    ) || markdown.imageAspectRatioProfileId,
+    imageResolutionId: text(
+      taskMetadata.imageResolutionId ??
+      taskMetadata.imageResolution ??
+      metadata.imageResolutionId ??
+      metadata.imageResolution ??
+      metadata["图片清晰度"] ??
+      metadata["生图清晰度"]
+    ) || markdown.imageResolutionId,
     briefFocus: businessText(taskMetadata.briefFocus ?? metadata.briefFocus ?? metadata["用户作图重点"]),
     commonRuleProfile: text(taskMetadata.commonRuleProfile ?? metadata.commonRuleProfile),
     commonRuleName: text(taskMetadata.commonRuleName ?? metadata.commonRuleName),
@@ -416,6 +452,9 @@ function parseMarkdownBrief(content: string) {
     targetPlatform: pickBriefField(fields, ["targetplatform", "platform", "目标平台", "平台", "电商平台"]),
     outputLanguage,
     suiteRatio: pickBriefField(fields, ["suiteratio", "ratio", "套图比例", "画幅比例", "比例"]),
+    generationProfileId: pickBriefField(fields, ["generationprofileid", "generationprofile", "套图方案", "套图预设"]),
+    imageAspectRatioProfileId: pickBriefField(fields, ["imageaspectratioprofileid", "imageaspectratioprofile", "生图比例方案"]),
+    imageResolutionId: pickBriefField(fields, ["imageresolutionid", "imageresolution", "图片清晰度", "生图清晰度", "分辨率"]),
     category: pickBriefField(fields, ["category", "类目", "品类"]),
     sellingPoints: pickBriefField(fields, ["sellingpoints", "卖点", "核心卖点", "产品卖点"]),
     specs: pickBriefField(fields, ["specs", "规格", "规格参数", "参数"]),
@@ -457,6 +496,9 @@ function emptyBrief() {
     targetPlatform: "",
     outputLanguage: "",
     suiteRatio: "",
+    generationProfileId: "",
+    imageAspectRatioProfileId: "",
+    imageResolutionId: "",
     category: "",
     sellingPoints: "",
     specs: "",
@@ -468,6 +510,13 @@ function emptyBrief() {
     generateDetail: "",
     briefPath: undefined as string | undefined
   };
+}
+
+function normalizeImageResolutionId(value: unknown): ProductTask["imageResolutionId"] {
+  const normalized = text(value).toLowerCase();
+  return normalized === "720p" || normalized === "1k" || normalized === "2k" || normalized === "4k"
+    ? normalized
+    : undefined;
 }
 
 function normalizeBriefKey(value: string): string {

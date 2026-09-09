@@ -84,6 +84,10 @@ export interface ProductTask {
   notes: string;
   briefPath?: string;
   suiteRatio?: string;
+  generationProfileId?: string;
+  imageAspectRatioProfileId?: "ecommerce-standard" | "portrait-main";
+  imageResolutionId?: "720p" | "1k" | "2k" | "4k";
+  detailImageCount?: number;
   briefFocus?: string;
   commonRuleProfile?: string;
   commonRuleName?: string;
@@ -227,6 +231,22 @@ export interface GenerationManifest {
   startedAt: string;
   completedAt: string;
   durationMs: number;
+  imageResolution?: {
+    id: "720p" | "1k" | "2k" | "4k";
+    label: string;
+    providerResolution: "1k" | "2k" | "4k";
+    mainWidth: number;
+    mainHeight: number;
+    detailWidth: number;
+    detailHeight: number;
+  };
+  imageAspectRatio?: {
+    id: "ecommerce-standard" | "portrait-main";
+    label: string;
+    summary: string;
+    mainAspectRatio: "1:1" | "3:4" | "9:16";
+    detailAspectRatio: "1:1" | "3:4" | "9:16";
+  };
   mainImages: GeneratedAsset[];
   detailImages: GeneratedAsset[];
   longDetailPath?: string;

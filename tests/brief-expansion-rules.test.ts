@@ -33,6 +33,91 @@ test("trusted robot identity overrides a stale shoe category", () => {
   );
 });
 
+test("duck-shaped articulated toy is not mislabeled as an AI companion robot", () => {
+  const analysis = "Duck-shaped robotic toys with rounded heads, yellow side eyes, exposed articulated joints, orange feet, a blue shell with dinosaur and rainbow graphics, a child hand and a play ball.";
+  const identity = inferProductIdentity({
+    productName: "机械鸭互动玩具",
+    rawBriefText: "鸭形拼装互动玩具，突出关节、蓝色图案、孩子手部和小球互动。",
+    productImageAnalysis: analysis,
+  });
+  const points = inferBriefSellingPoints({
+    productName: "机械鸭互动玩具",
+    rawBriefText: "鸭形拼装互动玩具，突出关节、蓝色图案、孩子手部和小球互动。",
+    productImageAnalysis: analysis,
+    outputLanguage: "English",
+  });
+
+  assert.equal(identity.id, "duck-robot-toy");
+  assert.equal(inferCategoryFromSource(analysis, "English"), "Articulated Robot Toys / Construction Toys");
+  assert.match(points.join("\n"), /Duck-inspired|articulated|Blue shell|Hands-on/i);
+  assert.doesNotMatch(points.join("\n"), /AI conversation|voice interaction|network/i);
+});
+
+test("compact profiles produce only their selected screen counts", () => {
+  const sections = buildConcreteBriefSections({
+    productName: "机械鸭互动玩具",
+    visibleProductName: "Articulated Duck Robot Toy",
+    sellingPoints: ["鸭形外观", "裸露关节", "蓝色图案", "孩子手部互动"],
+    rawBriefText: "产品名称：机械鸭互动玩具\n用户作图重点：鸭形外观，裸露关节，蓝色图案，孩子手部互动。",
+    productImageAnalysis: "Duck-shaped articulated toy with a side eye, orange feet, blue graphic shell and child hand interaction.",
+    outputLanguage: "English",
+    generationProfile: { mainImageCount: 3, detailImageCount: 4 },
+  });
+
+  assert.equal((sections.mainPlan.match(/^\d+\./gm) || []).length, 3);
+  assert.equal((sections.detailPlan.match(/^\d+\./gm) || []).length, 4);
+});
+
+test("English 1+2 umbrella expansion supplements two user points without losing them", () => {
+  const rawBriefText = `产品名称：雨伞
+目标平台：Amazon
+输出语言：English
+用户作图重点：轻便，防晒`;
+  const productImageAnalysis = "A dark-blue folding umbrella with a contrast-trim canopy, wrist strap, fastening band and visible frame details.";
+  const generationProfile = { mainImageCount: 1, detailImageCount: 2 };
+  const points = inferBriefSellingPoints({
+    productName: "雨伞",
+    rawBriefText,
+    productImageAnalysis,
+    outputLanguage: "English",
+  });
+  const sections = buildConcreteBriefSections({
+    productName: "雨伞",
+    visibleProductName: "Folding Umbrella",
+    sellingPoints: points,
+    rawBriefText,
+    productImageAnalysis,
+    outputLanguage: "English",
+    generationProfile,
+  });
+  const draft = `商品作图需求模板
+产品名称：雨伞
+可见展示名：Folding Umbrella
+目标平台：Amazon
+输出语言：English
+人群：Commuters who need portable everyday weather coverage
+类目：Umbrellas
+核心卖点：
+${points.map((point) => `- ${point}`).join("\n")}
+主图规划：
+${sections.mainPlan}
+详情页规划：
+${sections.detailPlan}`;
+  const issues = briefExpansionQualityIssues(draft, {
+    rawBriefText,
+    productName: "雨伞",
+    productImageAnalysis,
+    outputLanguage: "English",
+    generationProfile,
+  });
+
+  assert.equal(points.length, 3);
+  assert.match(points.join("\n"), /Compact and easy to carry/i);
+  assert.match(points.join("\n"), /shade for sunny commutes/i);
+  assert.ok(points.every((point) => !/[\u3400-\u9fff]/.test(point)), points.join("\n"));
+  assert.deepEqual(issues, []);
+});
+
 test("creates a stable blender identity before expanding selling points", () => {
   const identity = inferProductIdentity({
     productName: "家用破壁机",

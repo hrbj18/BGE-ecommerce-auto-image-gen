@@ -10,6 +10,7 @@ import {
   type NativeImageSpec
 } from "./openai-image-generator.ts";
 import { writeJson, zipFiles } from "./fs-utils.ts";
+import { detailImageCountForTask, overviewFilename } from "./generation-profiles.mjs";
 import { isActionableGeneratedVisualAuditFailure, type GeneratedVisualAuditReport } from "./output-audit.ts";
 import { auditNativePromptSet } from "./prompt-audit.ts";
 import type { GeneratedAsset, LocalProductImage, ProductTask } from "./types.ts";
@@ -89,18 +90,16 @@ async function main(): Promise<void> {
         ...record,
         prompt: `${record.prompt}\n\nVISUAL REVIEW RETRY:\nThe retry must still execute this exact plan:\n${record.auditSummary || "Use the current frame mission above."}\nCorrect only the rejected quality issues while preserving the product identity and all approved constraints. Review notes: ${item.reasons.join("; ")}`
       };
-      const candidatePath = path.join(outputDir, "raw", `manual-review-${retrySpec.role}-${String(retrySpec.index).padStart(2, "0")}-${Date.now()}.png`);
+      const finalPath = record.path || path.join(outputDir, record.role, `${String(record.index).padStart(2, "0")}-${record.title}.png`);
       const generation = await generator.generateValidatedNativeAsset({
         spec: retrySpec,
-        outputPath: candidatePath,
+        outputPath: finalPath,
         productImages,
         task,
         invalidDir,
-        attemptNumber: 300 + item.index
+        attemptNumber: 300 + item.index,
+        forceNewSubmission: true
       });
-      const finalPath = record.path || path.join(outputDir, record.role, `${String(record.index).padStart(2, "0")}-${record.title}.png`);
-      await fs.copyFile(candidatePath, finalPath);
-      await fs.rm(candidatePath, { force: true });
       record.status = "completed";
       Object.assign(record, {
         taskId: generation.taskId,
@@ -147,8 +146,8 @@ async function refreshDerivedOutput(
   const detailImages = assets.filter((asset) => asset.role === "detail").sort(assetOrder);
   const longDetailPath = detailImages.length ? await composeLongDetailImage(detailImages, path.join(outputDir, "详情页完整长图.jpg")) : undefined;
   const english = /^en(?:glish)?$/i.test(task.outputLanguage?.trim() ?? "");
-  const mainPreviewPath = mainImages.length ? await composeContactSheet(mainImages, path.join(outputDir, "5张主图总览.jpg"), { columns: 2, cellWidth: 720, background: "#f4f0ea", labelLanguage: english ? "en" : "zh" }) : undefined;
-  const detailPreviewPath = detailImages.length ? await composeContactSheet(detailImages, path.join(outputDir, "8张详情页总览.jpg"), { columns: 2, cellWidth: 520, background: "#f4f0ea", labelLanguage: english ? "en" : "zh" }) : undefined;
+  const mainPreviewPath = mainImages.length ? await composeContactSheet(mainImages, path.join(outputDir, overviewFilename("main", task.mainImageCount)), { columns: 2, cellWidth: 720, background: "#f4f0ea", labelLanguage: english ? "en" : "zh" }) : undefined;
+  const detailPreviewPath = detailImages.length ? await composeContactSheet(detailImages, path.join(outputDir, overviewFilename("detail", detailImageCountForTask(task))), { columns: 2, cellWidth: 520, background: "#f4f0ea", labelLanguage: english ? "en" : "zh" }) : undefined;
   const generationAuditPath = path.join(outputDir, "generation-audit.json");
   const generationAudit = JSON.parse(await fs.readFile(generationAuditPath, "utf8")) as Record<string, unknown>;
   Object.assign(generationAudit, { generatedAt: new Date().toISOString(), visualAudit });

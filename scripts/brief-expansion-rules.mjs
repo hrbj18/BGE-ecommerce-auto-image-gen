@@ -67,6 +67,20 @@ const categoryProfiles = [
     fallbackPoints: ["晴雨出行更从容", "折叠便携，随手收纳", "伞骨与伞面细节清楚可见"],
   },
   {
+    id: "duck-robot-toy",
+    label: "机械鸭拼装互动玩具",
+    priority: true,
+    match: /机械鸭|鸭形(?:机器人|玩具)?|鸭子机器人|duck[- ]?(?:shaped|inspired|robot|toy)|articulated duck/i,
+    leak: /机械鸭|鸭形(?:机器人|玩具)?|鸭子机器人|duck[- ]?(?:shaped|inspired|robot|toy)|articulated duck/i,
+    forms: ["鸭形玩具全貌", "头部、侧眼与关节近景", "手持部件的拼装互动", "小球陪玩的桌面场景", "蓝色图案与橙色脚细节"],
+    staticProof: "用圆润鸭头、侧面圆眼、裸露关节、橙色脚和可见图案证明玩具身份与结构，不把机械结构改写成 AI 功能。",
+    dynamicProof: "用孩子手部拿取部件、桌面摆放、不同站姿和小球互动呈现可玩性；不宣称语音、联网、灯光、行走性能或包装数量。",
+    interaction: "可加入孩子手部、可见部件和小球，但必须保留鸭形轮廓、关节和脚部颜色；多只玩具只作为场景，不暗示套装数量。",
+    antiRepeat: "在产品全貌、结构近景、手部拼装、桌面互动和图案细节之间切换，禁止把同一站姿只换背景。",
+    fallbackPoints: ["圆润鸭头、侧眼和橙色脚构成高辨识度机械鸭外观", "裸露关节与可见部件适合用近景展示拼装互动", "孩子手部、小球和不同站姿能证明动手陪玩场景"],
+    fallbackPointsEn: ["Duck-inspired design with a rounded head, side eye and orange feet", "Visible articulated joints and component details for build-and-play presentation", "Hands-on tabletop play shown through child interaction, distinct poses and a play ball"],
+  },
+  {
     id: "robot",
     label: "AI 机器人",
     match: /机器人|robot|AI陪伴|智能对话|LED表情|豆包|deepseek/i,
@@ -159,10 +173,13 @@ export function inferProductIdentity({ productName = "", rawBriefText = "", prod
     .map((profile) => ({ profile, score: countMatches(trustedSource, profile.match) }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score);
-  const matches = (primaryMatches.length ? primaryMatches : categoryProfiles
-    .map((profile) => ({ profile, score: countMatches(supplementalSource, profile.match) })))
+  const priorityMatches = primaryMatches.filter((item) => item.profile.priority);
+  const selectedPrimaryMatches = priorityMatches.length ? priorityMatches : primaryMatches;
+  const supplementalMatches = categoryProfiles
+    .map((profile) => ({ profile, score: countMatches(supplementalSource, profile.match) }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score);
+  const matches = selectedPrimaryMatches.length ? selectedPrimaryMatches : supplementalMatches;
   const profile = matches[0]?.profile || genericProfile;
   return {
     id: profile.id,
@@ -201,10 +218,14 @@ export function inferBriefSellingPoints({ productName = "", rawBriefText = "", p
   const points = uniqueNonEmpty([...userSeeds, ...hints])
     .map((seed) => upgradeSellingPoint(seed, identity, outputLanguage))
     .filter(Boolean);
-  const fallbackPoints = outputLanguage === "English"
+  const rawFallbackPoints = outputLanguage === "English"
     ? identity.profile.fallbackPointsEn || identity.profile.fallbackPoints
     : identity.profile.fallbackPoints;
-  return uniqueNonEmpty([...points, ...(points.length ? [] : fallbackPoints)]).slice(0, 10);
+  const fallbackPoints = outputLanguage === "English"
+    ? rawFallbackPoints.map((point) => upgradeEnglishPoint(point, identity)).filter(Boolean)
+    : rawFallbackPoints;
+  const supplemented = uniqueNonEmpty([...points, ...fallbackPoints]);
+  return supplemented.slice(0, Math.min(10, Math.max(3, points.length)));
 }
 
 function filterSeedsForIdentity(seeds, identity) {
@@ -217,17 +238,19 @@ function filterSeedsForIdentity(seeds, identity) {
   }));
 }
 
-export function buildConcreteBriefSections({ productName = "", visibleProductName = "", sellingPoints = [], rawBriefText = "", productImageAnalysis = "", outputLanguage = "" } = {}) {
+export function buildConcreteBriefSections({ productName = "", visibleProductName = "", sellingPoints = [], rawBriefText = "", productImageAnalysis = "", outputLanguage = "", generationProfile = null } = {}) {
   const identity = inferProductIdentity({ productName: `${productName}\n${visibleProductName}`, rawBriefText, productImageAnalysis });
   const points = filterSeedsForIdentity(uniqueNonEmpty(sellingPoints), identity).slice(0, 12);
   const seeds = filterSeedsForIdentity(extractUserSellingPointSeeds(rawBriefText), identity);
+  const mainImageCount = Math.max(0, Math.floor(Number(generationProfile?.mainImageCount) || 5));
+  const detailImageCount = Math.max(0, Math.floor(Number(generationProfile?.detailImageCount) || 8));
   return {
     extractedPoints: seeds.map((seed) => `- ${seed}`).join("\n") || "- 未填写具体卖点，已仅根据当前产品图补充基础展示方向。",
     evidence: buildEvidenceList(points, identity, outputLanguage).map((item) => `- ${item}`).join("\n"),
     risks: buildRiskList(rawBriefText, identity, outputLanguage).map((item) => `- ${item}`).join("\n"),
     proofMatrix: buildProofMatrixText({ productName, visibleProductName, sellingPoints: points, rawBriefText, productImageAnalysis, outputLanguage }),
-    mainPlan: buildPlan(points, identity, 5, "主图", outputLanguage, 0),
-    detailPlan: buildPlan(points, identity, 8, "详情页", outputLanguage, 5),
+    mainPlan: buildPlan(points, identity, mainImageCount, "主图", outputLanguage, 0),
+    detailPlan: buildPlan(points, identity, detailImageCount, "详情页", outputLanguage, mainImageCount),
   };
 }
 
@@ -256,7 +279,7 @@ export function buildProofMatrixText({ productName = "", visibleProductName = ""
   ].join("\n");
 }
 
-export function briefExpansionQualityIssues(content = "", { rawBriefText = "", productName = "", productImageAnalysis = "", outputLanguage = "" } = {}) {
+export function briefExpansionQualityIssues(content = "", { rawBriefText = "", productName = "", productImageAnalysis = "", outputLanguage = "", generationProfile = null } = {}) {
   const text = String(content || "").trim();
   const issues = [];
   if (!text) return ["扩写结果为空"];
@@ -280,8 +303,10 @@ export function briefExpansionQualityIssues(content = "", { rawBriefText = "", p
   if (parsedPoints.length < 3) issues.push("核心卖点少于 3 条具体内容");
   const mainPlan = extractLabeledBlock(text, ["主图规划"]);
   const detailPlan = extractLabeledBlock(text, ["详情页规划"]);
-  if (numberedPlanCount(mainPlan) !== 5) issues.push("主图规划不是完整 5 条");
-  if (numberedPlanCount(detailPlan) !== 8) issues.push("详情页规划不是完整 8 条");
+  const expectedMainImageCount = Math.max(0, Math.floor(Number(generationProfile?.mainImageCount) || 5));
+  const expectedDetailImageCount = Math.max(0, Math.floor(Number(generationProfile?.detailImageCount) || 8));
+  if (numberedPlanCount(mainPlan) !== expectedMainImageCount) issues.push(`主图规划不是完整 ${expectedMainImageCount} 条`);
+  if (numberedPlanCount(detailPlan) !== expectedDetailImageCount) issues.push(`详情页规划不是完整 ${expectedDetailImageCount} 条`);
   if (hasRepeatedGenericPlanScene(mainPlan) || hasRepeatedGenericPlanScene(detailPlan)) issues.push("逐屏场景仍重复使用同一通用构图");
   const language = outputLanguage || extractSimpleField(text, ["输出语言", "output language"]);
   if (language === "English" && parsedPoints.some((point) => containsCjk(point))) issues.push("English 模式的核心卖点仍含中文营销句");
@@ -356,6 +381,14 @@ function countMatches(source, pattern) {
 
 function extractProductHintSeeds(identity, source) {
   const text = String(source || "");
+  if (identity.id === "duck-robot-toy") {
+    return [
+      /鸭|duck/i.test(text) ? "鸭形机械玩具外观" : "",
+      /关节|部件|拼装|articulated|joint|component/i.test(text) ? "可见关节与拼装部件" : "",
+      /蓝|blue|恐龙|彩虹|orange|橙/i.test(text) ? "蓝色图案、圆眼与橙色脚细节" : "",
+      /孩子|手部|小球|互动|play|ball/i.test(text) ? "孩子手部与小球互动场景" : "",
+    ].filter(Boolean);
+  }
   if (identity.id === "blender") {
     const hints = [];
     if (/容量|大杯|多人|全家|large/i.test(text)) hints.push("大容量搅拌杯");
@@ -396,6 +429,13 @@ function upgradeSellingPoint(seed, identity, outputLanguage) {
   const clean = cleanSeed(seed);
   if (!clean) return "";
   if (outputLanguage === "English") return upgradeEnglishPoint(clean, identity);
+  if (identity.id === "duck-robot-toy") {
+    if (/鸭|外观|圆眼|橙色脚/.test(clean)) return "圆润鸭头、侧面圆眼和橙色脚构成高辨识度机械鸭外观";
+    if (/关节|部件|拼装/.test(clean)) return "裸露关节与可见部件适合用近景展示拼装互动";
+    if (/蓝|恐龙|彩虹|图案/.test(clean)) return "蓝色外壳上的恐龙与彩虹云朵图案需要在近景中保留";
+    if (/孩子|手部|小球|互动|陪玩/.test(clean)) return "用孩子手部、桌面站姿和小球呈现动手互动场景";
+    return `${clean}，只用可见结构和互动场景证明，不虚构功能`;
+  }
   if (identity.id === "blender") {
     if (/容量|大杯|多人|全家/.test(clean)) return "大容量搅拌杯，一次处理多份食材更省心";
     if (/豆浆|米糊|果汁|奶昔|辅食|饮品/.test(clean)) return "豆浆、米糊或果汁等饮品制作更方便";
@@ -437,6 +477,13 @@ function upgradeSellingPoint(seed, identity, outputLanguage) {
 }
 
 function upgradeEnglishPoint(seed, identity) {
+  if (identity.id === "duck-robot-toy") {
+    if (/鸭|duck|外观|圆眼|橙色脚|orange feet/i.test(seed)) return "Duck-inspired design with a rounded head, side eye and orange feet";
+    if (/关节|部件|拼装|articulated|joint|component/i.test(seed)) return "Visible articulated joints and component details for build-and-play presentation";
+    if (/蓝|blue|恐龙|彩虹|图案|graphic/i.test(seed)) return "Blue shell with distinctive dinosaur and rainbow graphics";
+    if (/孩子|手部|小球|互动|play|ball/i.test(seed)) return "Hands-on tabletop play shown through child interaction and a play ball";
+    return "Visible duck-toy details shown through a specific hands-on play scene";
+  }
   if (identity.id === "blender") {
     if (/容量|大杯|多人|全家|large/i.test(seed)) return "Large blending cup for everyday multi-serve preparation";
     if (/豆浆|米糊|果汁|奶昔|辅食|饮品|drink/i.test(seed)) return "Convenient for soy milk, smoothies and everyday drinks";
@@ -473,6 +520,7 @@ function upgradeEnglishPoint(seed, identity) {
   }
   if (identity.id === "umbrella") {
     if (/轻便|便携|折叠|portable|compact/i.test(seed)) return "Compact and easy to carry for daily travel";
+    if (/防晒|遮阳|sun|shade|uv/i.test(seed)) return "Portable shade for sunny commutes";
     if (/防雨|晴雨|防水|rain/i.test(seed)) return "Everyday rain coverage for changing weather";
     if (/伞骨|稳固|抗风|frame|wind/i.test(seed)) return "Visible frame details designed for everyday confidence";
   }

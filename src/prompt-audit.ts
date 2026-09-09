@@ -1,4 +1,5 @@
 import type { ProductTask } from "./types.ts";
+import { detailImageCountForTask } from "./generation-profiles.mjs";
 
 export type ProductIdentityId =
   | "ai-robot"
@@ -196,7 +197,7 @@ export function auditTaskIdentity(task: IdentityInput): { ok: boolean; identity:
 }
 
 export function auditNativePromptSet(
-  task: IdentityInput & Pick<ProductTask, "mainImageCount" | "generateDetail">,
+  task: IdentityInput & Pick<ProductTask, "mainImageCount" | "generateDetail" | "detailImageCount" | "generationProfileId">,
   specs: PromptAuditSpec[],
   context: PromptAuditContext = {}
 ): PromptAuditResult {
@@ -205,7 +206,7 @@ export function auditNativePromptSet(
   const warnings: string[] = [];
   const forbiddenMatches = new Set<string>();
   const missingEvidence: string[] = [];
-  const expectedCount = task.mainImageCount + (task.generateDetail ? 8 : 0);
+  const expectedCount = task.mainImageCount + detailImageCountForTask(task);
 
   if (specs.length !== expectedCount) {
     errors.push(`提示词数量不完整：预期 ${expectedCount} 张，实际生成 ${specs.length} 张。`);

@@ -11,6 +11,8 @@ export interface StoryboardPlanInput {
   productKind?: string;
   isEnglishMarketplace?: boolean;
   generateDetail?: boolean;
+  mainImageCount?: number;
+  detailImageCount?: number;
 }
 
 export interface StoryboardFrame {
@@ -365,11 +367,17 @@ export function buildStoryboardPlan(input: StoryboardPlanInput): StoryboardPlan 
   const explicitPoints = uniquePoints(input.explicitSellingPoints ?? []);
   const derivedPoints = uniquePoints(input.derivedSellingPoints ?? input.sellingPoints);
   const points = uniquePoints([...explicitPoints, ...derivedPoints]);
-  const frames = input.isAiRobot
+  const completeFrames = input.isAiRobot
     ? buildRobotFrames(points, input.productName, input.generateDetail !== false)
     : input.productKind === "dietary-supplement"
       ? buildSupplementFrames(points, input.productName, input.generateDetail !== false)
-    : buildGenericFrames(points, input.productName, input.generateDetail !== false);
+      : buildGenericFrames(points, input.productName, input.generateDetail !== false);
+  const mainImageCount = normalizeFrameCount(input.mainImageCount, 5);
+  const detailImageCount = input.generateDetail === false ? 0 : normalizeFrameCount(input.detailImageCount, 8);
+  const frames = [
+    ...completeFrames.filter((frame) => frame.role === "main").slice(0, mainImageCount),
+    ...completeFrames.filter((frame) => frame.role === "detail").slice(0, detailImageCount),
+  ];
   assignExplicitPoints(frames, explicitPoints);
   const coverage = buildCoverage(frames, explicitPoints, derivedPoints);
   const issues: string[] = [];
@@ -395,6 +403,11 @@ export function buildStoryboardPlan(input: StoryboardPlanInput): StoryboardPlan 
     if (item.status === "needs_confirmation") issues.push(`用户卖点需确认：${item.point}`);
   }
   return { frames, audit: { passed: issues.length === 0, issues }, coverage };
+}
+
+function normalizeFrameCount(value: number | undefined, fallback: number): number {
+  if (!Number.isInteger(value) || value === undefined) return fallback;
+  return Math.max(0, Math.min(fallback, value));
 }
 
 export function storyboardFramePrompt(frame: StoryboardFrame): string {

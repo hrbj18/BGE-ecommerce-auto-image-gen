@@ -101,6 +101,82 @@ test("folder source reads product subdirectories with local briefs", async () =>
   assert.equal(tasks[0].localProductImages[0], path.join(productDir, "红色胸罩.png"));
 });
 
+test("folder source reads the compact profile from trusted task metadata", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "folder-source-compact-"));
+  const inputDir = path.join(tmp, "待作图");
+  const outputDir = path.join(tmp, "已完成");
+  const productDir = path.join(inputDir, "轻量套图商品");
+  await fs.mkdir(productDir, { recursive: true });
+  await fs.writeFile(path.join(productDir, "商品.png"), Buffer.alloc(100));
+  await fs.writeFile(path.join(productDir, "需求模板.md"), [
+    "产品名称：轻量套图商品",
+    "生成详情页：是",
+    "套图方案：compact-2-3",
+  ].join("\n"));
+  await fs.writeFile(path.join(productDir, "任务信息.json"), JSON.stringify({
+    taskId: "compact-task",
+    productName: "轻量套图商品",
+    generationProfileId: "compact-2-3",
+    imageAspectRatioProfileId: "portrait-main",
+    imageResolutionId: "720p",
+  }));
+
+  const source = new FolderTaskSource({ inputDir, outputDir, workspaceDir: tmp });
+  const [task] = await source.listPendingTasks(10);
+  assert.equal(task.generationProfileId, "compact-2-3");
+  assert.equal(task.mainImageCount, 2);
+  assert.equal(task.detailImageCount, 3);
+  assert.equal(task.imageAspectRatioProfileId, "portrait-main");
+  assert.equal(task.suiteRatio, "主图 3:4 / 详情页 9:16");
+  assert.equal(task.imageRatio, "3:4");
+  assert.equal(task.imageResolutionId, "720p");
+  assert.equal(task.generateDetail, true);
+
+  await source.updateTask(task, { status: "已完成", outputDir: task.outputDir });
+  const status = JSON.parse(await fs.readFile(path.join(task.outputDir || "", "folder-status.json"), "utf8"));
+  assert.equal(status.generationProfileId, "compact-2-3");
+  assert.equal(status.mainImageCount, 2);
+  assert.equal(status.detailImageCount, 3);
+  assert.equal(status.imageAspectRatioProfileId, "portrait-main");
+  assert.equal(status.imageResolutionId, "720p");
+});
+
+test("folder source derives one plus two and three plus four from their registered profiles", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "folder-source-more-compact-profiles-"));
+  const inputDir = path.join(tmp, "待作图");
+  const outputDir = path.join(tmp, "已完成");
+  const expectedProfiles = [
+    { id: "compact-1-2", mainImageCount: 1, detailImageCount: 2 },
+    { id: "compact-3-4", mainImageCount: 3, detailImageCount: 4 },
+  ];
+  for (const profile of expectedProfiles) {
+    const productDir = path.join(inputDir, profile.id);
+    await fs.mkdir(productDir, { recursive: true });
+    await fs.writeFile(path.join(productDir, "商品.png"), Buffer.alloc(100));
+    await fs.writeFile(path.join(productDir, "需求模板.md"), [
+      `产品名称：${profile.id}`,
+      "生成详情页：是",
+      `套图方案：${profile.id}`,
+    ].join("\n"));
+    await fs.writeFile(path.join(productDir, "任务信息.json"), JSON.stringify({
+      taskId: profile.id,
+      productName: profile.id,
+      generationProfileId: profile.id,
+    }));
+  }
+
+  const source = new FolderTaskSource({ inputDir, outputDir, workspaceDir: tmp });
+  const tasks = await source.listPendingTasks(10);
+  assert.equal(tasks.length, expectedProfiles.length);
+  for (const expected of expectedProfiles) {
+    const task = tasks.find((candidate) => candidate.generationProfileId === expected.id);
+    assert.ok(task, `missing ${expected.id}`);
+    assert.equal(task.mainImageCount, expected.mainImageCount);
+    assert.equal(task.detailImageCount, expected.detailImageCount);
+    assert.equal(task.generateDetail, true);
+  }
+});
+
 test("folder source targets one task directory even when product names match", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "folder-source-task-id-"));
   const inputDir = path.join(tmp, "待作图");

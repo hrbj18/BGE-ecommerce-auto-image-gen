@@ -5,6 +5,11 @@ const categoryPatterns = [
     en: "Kitchen Blenders",
   },
   {
+    pattern: /机械鸭|鸭形(?:机器人|玩具)?|鸭子机器人|duck[- ]?(?:shaped|inspired|robot|toy)|articulated duck/i,
+    zh: "机械鸭拼装互动玩具",
+    en: "Articulated Robot Toys / Construction Toys",
+  },
+  {
     pattern: /机器人|robot|AI陪伴|智能对话|LED表情|豆包|豆宝|deepseek/i,
     zh: "AI陪伴机器人 / 儿童智能玩具 / 桌面潮玩",
     en: "AI Companion Robots / Smart Toys",

@@ -2,6 +2,8 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
+  // 若依集成模式把本应用嵌到 /workbench/；普通工作台仍保持根路径。
+  base: process.env.BGE_WORKBENCH_BASE || "/",
   optimizeDeps: {
     include: ["react", "react-dom/client"],
   },

@@ -3,10 +3,12 @@
 ## 启动与命令
 
 - 一键启动：`一键启动项目.bat`
+- 若依管理端：`启动若依管理后台.cmd`；普通用户端：`启动用户端.cmd`
+- 受控刷新服务：`admin/scripts/refresh-bge-node.ps1`、`admin/scripts/refresh-admin-backend.ps1`
 - Web 编排：`scripts/dev-web-app.mjs`
 - 本地后端：`scripts/local-web-server.mjs`
 - 生成进度解析：`scripts/generation-progress.mjs`
-- 前端：`frontend/src/App.jsx`、`frontend/src/styles.css`
+- 前端：`frontend/src/App.jsx`、`frontend/src/styles.css`；参考图文件规划：`frontend/src/reference-upload.js`
 - 文件夹工作流：`npm run folder`
 - Web：`npm run web`
 - 新电脑无付费初始化：`pnpm run bootstrap`
@@ -14,6 +16,7 @@
 - 完整无付费回归：`pnpm run verify:free`
 - 类型检查：`npm run typecheck`
 - 全量测试：`npm test`
+- 参考图真实浏览器拖拽冒烟：`pnpm run smoke:reference-drag`（要求本机 `8002/workbench/` 已启动，可用 `BGE_REFERENCE_DRAG_SMOKE_URL` 覆盖）
 - 上下文审计：`npm run handoff:audit`
 - GitHub 发布集合审计：`npm run release:audit`
 - 首次接手合同：`docs/handoff/FIRST_RUN.md`
@@ -32,6 +35,9 @@
 - 提示词审核：`src/prompt-audit.ts`
 - 输出审核：`src/output-audit.ts`
 - 已有成品审计/定向返工入口：`src/audit-output.ts`
+- 套图预设与总览命名：`src/generation-profiles.mjs`
+- 生图比例预设与角色映射：`src/image-aspect-ratio-profiles.mjs`
+- 图片清晰度预设、上游映射和交付尺寸：`src/image-resolution-profiles.mjs`
 - 规则加载：`scripts/generation-rule-loader.mjs`
 - AI 扩写规则：`scripts/brief-expansion-rules.mjs`
 
@@ -51,7 +57,9 @@
 
 - 创意/分镜：`tests/creative-director.test.ts`、`tests/storyboard-planner.test.ts`
 - 生图兼容与恢复：`tests/openai-image-generator-native.test.ts`
+- 比例注册表与尺寸：`tests/image-aspect-ratio-profiles.test.ts`、`tests/image-resolution-profiles.test.ts`
 - 调度优先级、受限并行与进度协议：`tests/generation-speed.test.ts`
 - 扩写与污染防护：`tests/brief-expansion-rules.test.ts`、`tests/prompt-cache.test.ts`
 - 审核：`tests/prompt-audit.test.ts`、`tests/output-audit.test.ts`
 - Web 后端逻辑主要位于大体量脚本，改动时补最邻近的可测试模块，并至少做端点冒烟测试。
+- 参考图上传规则：`tests/reference-upload.test.ts`；真实 Chrome 文件拖拽：`scripts/smoke-reference-drag-upload.mjs`。

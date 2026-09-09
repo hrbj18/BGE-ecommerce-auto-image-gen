@@ -3,10 +3,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { randomFillSync } from "node:crypto";
+import { createHash, randomFillSync } from "node:crypto";
 import sharp from "sharp";
 import type { AppConfig, BrandProfile, ProductTask, ReferenceAnalysis } from "../src/types.ts";
 import { OpenAiImageGenerator } from "../src/openai-image-generator.ts";
+import {
+  AiEchoTaskLedger,
+  createAiEchoTaskFingerprint,
+  type AiEchoTaskIdentity
+} from "../src/aiecho-task-ledger.ts";
 
 function assertCompactDirectedPromptSet(prompts: string[], expectedCount = 13): void {
   assert.equal(prompts.length, expectedCount);
@@ -66,6 +71,175 @@ test("native generator submits visual-controller prompts for five main images", 
   assert.match(prompts[0], /Visible proof:/);
   assert.match(prompts[3], /macro|close-up|局部|细节/i);
   assert.match(prompts.join("\n"), /白鞋|运动鞋/);
+});
+
+test("openai generator does not retry a gateway capacity rejection", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-openai-capacity-"));
+  const productPath = path.join(tmp, "product.png");
+  await writeNoiseImage(productPath, 640, 640);
+  const config = makeConfig(tmp);
+  config.openai.imageProvider = "openai";
+  config.openai.apiKey = "test-key";
+  const task = { ...makeTask(tmp, productPath), mainImageCount: 1, detailImageCount: 0, generateDetail: false };
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ error: { message: "No available compatible accounts" } }), {
+      status: 503,
+      headers: { "content-type": "application/json" }
+    });
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      new OpenAiImageGenerator(config).generate(
+        task,
+        makeBrand(),
+        [{ sourceName: "product.png", path: productPath, mimeType: "image/png" }],
+        makeAnalysis(),
+        path.join(tmp, "out")
+      ),
+      /所有主图均生成失败/
+    );
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("native generator delivers every compact suite in local test mode", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-compact-suite-"));
+  const productPath = path.join(tmp, "product.png");
+  await writeNoiseImage(productPath, 640, 640);
+  const previousLocalMode = process.env.LOCAL_IMAGE_TEST_MODE;
+  process.env.LOCAL_IMAGE_TEST_MODE = "1";
+  try {
+    const config = makeConfig(tmp);
+    config.openai.aiEchoResolution = "1k";
+    for (const expected of [
+      { id: "compact-1-2", mainImageCount: 1, detailImageCount: 2 },
+      { id: "compact-2-3", mainImageCount: 2, detailImageCount: 3 },
+      { id: "compact-3-4", mainImageCount: 3, detailImageCount: 4 },
+    ]) {
+      const outDir = path.join(tmp, expected.id);
+      const task = {
+        ...makeTask(tmp, productPath),
+        generationProfileId: expected.id,
+        mainImageCount: expected.mainImageCount,
+        detailImageCount: expected.detailImageCount,
+        generateDetail: true,
+      };
+      const result = await new OpenAiImageGenerator(config).generate(
+        task,
+        makeBrand(),
+        [{ sourceName: "product.png", path: productPath, mimeType: "image/png" }],
+        makeAnalysis(),
+        outDir,
+      );
+
+      assert.equal(result.status, "已完成");
+      assert.equal(result.mainImages.length, expected.mainImageCount);
+      assert.equal(result.detailImages.length, expected.detailImageCount);
+      const promptAudit = JSON.parse(await fs.readFile(path.join(outDir, "prompt-audit.json"), "utf8"));
+      assert.equal(promptAudit.expectedCount, expected.mainImageCount + expected.detailImageCount);
+      assert.equal(promptAudit.actualCount, expected.mainImageCount + expected.detailImageCount);
+      await fs.access(path.join(outDir, `${expected.mainImageCount}张主图总览.jpg`));
+      await fs.access(path.join(outDir, `${expected.detailImageCount}张详情页总览.jpg`));
+    }
+  } finally {
+    if (previousLocalMode === undefined) delete process.env.LOCAL_IMAGE_TEST_MODE;
+    else process.env.LOCAL_IMAGE_TEST_MODE = previousLocalMode;
+  }
+});
+
+test("native generator delivers task-specific 720p and 1k dimensions", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-resolution-profiles-"));
+  const productPath = path.join(tmp, "product.png");
+  await writeNoiseImage(productPath, 640, 640);
+  const previousLocalMode = process.env.LOCAL_IMAGE_TEST_MODE;
+  process.env.LOCAL_IMAGE_TEST_MODE = "1";
+  try {
+    const config = makeConfig(tmp);
+    config.openai.aiEchoResolution = "2k";
+    for (const expected of [
+      { id: "720p" as const, main: [720, 720], detail: [720, 1280] },
+      { id: "1k" as const, main: [1024, 1024], detail: [1024, 1822] },
+    ]) {
+      const outDir = path.join(tmp, expected.id);
+      const task: ProductTask = {
+        ...makeTask(tmp, productPath),
+        generationProfileId: "compact-1-2",
+        mainImageCount: 1,
+        detailImageCount: 2,
+        generateDetail: true,
+        imageResolutionId: expected.id,
+      };
+      const result = await new OpenAiImageGenerator(config).generate(
+        task,
+        makeBrand(),
+        [{ sourceName: "product.png", path: productPath, mimeType: "image/png" }],
+        makeAnalysis(),
+        outDir,
+      );
+      assert.equal(result.status, "已完成");
+      assert.equal(result.mainImages.length, 1);
+      assert.equal(result.detailImages.length, 2);
+      assert.deepEqual([result.mainImages[0].width, result.mainImages[0].height], expected.main);
+      assert.deepEqual([result.detailImages[0].width, result.detailImages[0].height], expected.detail);
+      const report = JSON.parse(await fs.readFile(path.join(outDir, "report.json"), "utf8"));
+      assert.equal(report.imageResolution.id, expected.id);
+      assert.equal(report.imageResolution.providerResolution, "1k");
+    }
+  } finally {
+    if (previousLocalMode === undefined) delete process.env.LOCAL_IMAGE_TEST_MODE;
+    else process.env.LOCAL_IMAGE_TEST_MODE = previousLocalMode;
+  }
+});
+
+test("native generator applies the portrait main ratio without changing detail pages", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-portrait-main-ratio-"));
+  const productPath = path.join(tmp, "product.png");
+  const outDir = path.join(tmp, "out");
+  await writeNoiseImage(productPath, 640, 640);
+  const previousLocalMode = process.env.LOCAL_IMAGE_TEST_MODE;
+  process.env.LOCAL_IMAGE_TEST_MODE = "1";
+  try {
+    const config = makeConfig(tmp);
+    config.openai.aiEchoResolution = "1k";
+    const task: ProductTask = {
+      ...makeTask(tmp, productPath),
+      generationProfileId: "compact-1-2",
+      mainImageCount: 1,
+      detailImageCount: 2,
+      generateDetail: true,
+      imageResolutionId: "1k",
+      imageAspectRatioProfileId: "portrait-main",
+      suiteRatio: "主图 3:4 / 详情页 9:16",
+    };
+    const result = await new OpenAiImageGenerator(config).generate(
+      task,
+      makeBrand(),
+      [{ sourceName: "product.png", path: productPath, mimeType: "image/png" }],
+      makeAnalysis(),
+      outDir,
+    );
+    assert.equal(result.status, "已完成");
+    assert.deepEqual([result.mainImages[0].width, result.mainImages[0].height], [1024, 1366]);
+    assert.deepEqual([result.detailImages[0].width, result.detailImages[0].height], [1024, 1822]);
+    const prompts = JSON.parse(await fs.readFile(path.join(outDir, "prompts.json"), "utf8"));
+    assert.equal(prompts.find((item: { role: string }) => item.role === "main").aspectRatio, "3:4");
+    assert.equal(prompts.find((item: { role: string }) => item.role === "detail").aspectRatio, "9:16");
+    const mainPrompt = prompts.find((item: { role: string }) => item.role === "main").prompt;
+    assert.match(mainPrompt, /Canvas: 3:4|画布比例.*3:4/);
+    assert.doesNotMatch(mainPrompt, /Canvas:\s*1:1|画布[：:]\s*1:1|1:1 主图采用/);
+    const report = JSON.parse(await fs.readFile(path.join(outDir, "report.json"), "utf8"));
+    assert.equal(report.imageAspectRatio.id, "portrait-main");
+    assert.deepEqual([report.imageResolution.mainWidth, report.imageResolution.mainHeight], [1024, 1366]);
+  } finally {
+    if (previousLocalMode === undefined) delete process.env.LOCAL_IMAGE_TEST_MODE;
+    else process.env.LOCAL_IMAGE_TEST_MODE = previousLocalMode;
+  }
 });
 
 test("native generator builds bike basket prompts without cross-category copy leakage", async () => {
@@ -298,7 +472,7 @@ test("native generator reuses existing valid images and submits only missing one
   assert.equal(prompts.some((prompt) => /本屏角色：产品英雄首图/.test(prompt)), false);
 });
 
-test("native generator submits aiEcho image_urls as one newline-joined item", async () => {
+test("native generator submits the selected ratio and aiEcho image_urls as one newline-joined item", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-image-urls-"));
   const productPath = path.join(tmp, "product.png");
   await fs.writeFile(productPath, Buffer.alloc(260_000, 1));
@@ -325,6 +499,8 @@ test("native generator submits aiEcho image_urls as one newline-joined item", as
       ...makeTask(tmp, productPath),
       mainImageCount: 1,
       generateDetail: false,
+      imageAspectRatioProfileId: "portrait-main" as const,
+      suiteRatio: "主图 3:4 / 详情页 9:16",
       referenceImageUrls: ["https://img.example.test/a.png", "https://img.example.test/b.png"]
     };
     await assert.rejects(
@@ -336,7 +512,53 @@ test("native generator submits aiEcho image_urls as one newline-joined item", as
   }
 
   assert.equal(submissions.length, 1);
+  assert.equal(submissions[0].model, "gpt-2.0");
+  assert.equal(submissions[0].aspectRatio, "3:4");
+  assert.equal(submissions[0].imageSize, "2K");
+  assert.equal(submissions[0].resolution, "2k");
   assert.deepEqual(submissions[0].image_urls, ["https://img.example.test/a.png\nhttps://img.example.test/b.png"]);
+});
+
+test("native generator requests provider 1k for a 720p delivery task", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-720p-upstream-"));
+  const productPath = path.join(tmp, "product.png");
+  await fs.writeFile(productPath, Buffer.alloc(260_000, 1));
+  const submissions: Array<Record<string, unknown>> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/result")) {
+      return new Response(JSON.stringify({ code: 200, data: { status: "failed", error_msg: "stub failure", is_return: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    submissions.push(body);
+    return new Response(JSON.stringify({ code: 200, data: { local_task_id: `task-${submissions.length}` } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    const generator = new OpenAiImageGenerator(makeConfig(tmp));
+    const task: ProductTask = {
+      ...makeTask(tmp, productPath),
+      imageResolutionId: "720p",
+      mainImageCount: 1,
+      generateDetail: false,
+      referenceImageUrls: ["https://img.example.test/product.png"],
+    };
+    await assert.rejects(
+      generator.generate(task, makeBrand(), [{ sourceName: "product.png", path: productPath, mimeType: "image/png" }], makeAnalysis(), path.join(tmp, "out")),
+      /所有主图均生成失败/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(submissions.length, 1);
+  assert.equal(submissions[0].imageSize, "1K");
+  assert.equal(submissions[0].resolution, "1k");
 });
 
 test("native generator can upgrade prompt control with OpenAI product visual analysis", async () => {
@@ -1254,18 +1476,26 @@ test("native generator injects proof-matrix prompts for trash bags", async () =>
   assert.doesNotMatch(prompts.slice(0, 5).join("\n"), /本屏角色：详情页/);
 });
 
-test("native generator retries only the asset that returns wrong dimensions", async () => {
+test("native generator retries only one bad asset in a full 5+8 set and preserves the other twelve hashes", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-dimension-retry-"));
   const productPath = path.join(tmp, "product.png");
   const outDir = path.join(tmp, "out");
   await writeNoiseImage(productPath, 600, 600);
-  const squareImage = await largeImageBuffer(1024, 1024);
-  const detailImage = await largeImageBuffer(1024, 1822);
-  const wrongDetailImage = await largeImageBuffer(512, 768);
-  const taskMeta = new Map<string, { role: "main" | "detail"; detailIndex?: number }>();
+  const squareImages = await Promise.all(
+    ["#dce8c5", "#f0d9c2", "#c8dff0", "#ead0df", "#d9d2ef"]
+      .map((background) => largeImageBuffer(1024, 1024, background))
+  );
+  const detailImages = await Promise.all(
+    ["#d7e6c4", "#f2dfbf", "#c4dff2", "#ebcddd", "#d8d0ef", "#cce8e1", "#eed5c6", "#d1dcf0"]
+      .map((background) => largeImageBuffer(1024, 1822, background))
+  );
+  const wrongDetailImage = await largeImageBuffer(512, 768, "#ffccaa");
+  const taskMeta = new Map<string, { role: "main" | "detail"; index: number; attempt: number }>();
+  const promptMeta = new Map<string, { role: "main" | "detail"; index: number; attempts: number }>();
   let submissionCount = 0;
-  let detailSubmissionCount = 0;
-  let wrongServed = false;
+  let mainPromptCount = 0;
+  let detailPromptCount = 0;
+  let hashesBeforeRetry: Map<string, string> | undefined;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -1279,27 +1509,40 @@ test("native generator retries only the asset that returns wrong dimensions", as
     if (url.startsWith("https://images.example/")) {
       const taskId = url.split("/").pop()?.replace(/\.png$/, "") ?? "";
       const meta = taskMeta.get(taskId);
-      const shouldReturnWrongDetail = meta?.role === "detail" && meta.detailIndex === 3 && !wrongServed;
+      assert.ok(meta);
+      const shouldReturnWrongDetail = meta.role === "detail" && meta.index === 3 && meta.attempt === 1;
       if (shouldReturnWrongDetail) {
-        wrongServed = true;
         return new Response(new Uint8Array(wrongDetailImage), {
           status: 200,
           headers: { "content-type": "image/png" }
         });
       }
-      return new Response(new Uint8Array(meta?.role === "main" ? squareImage : detailImage), {
+      const image = meta.role === "main" ? squareImages[meta.index - 1] : detailImages[meta.index - 1];
+      return new Response(new Uint8Array(image), {
         status: 200,
         headers: { "content-type": "image/png" }
       });
     }
-    const body = JSON.parse(String(init?.body ?? "{}")) as { aspectRatio?: string };
+    const body = JSON.parse(String(init?.body ?? "{}")) as { aspectRatio?: string; prompt?: string };
     submissionCount += 1;
     const taskId = `task-${submissionCount}`;
-    if (body.aspectRatio === "9:16") {
-      detailSubmissionCount += 1;
-      taskMeta.set(taskId, { role: "detail", detailIndex: detailSubmissionCount });
-    } else {
-      taskMeta.set(taskId, { role: "main" });
+    const prompt = String(body.prompt ?? "");
+    let meta = promptMeta.get(prompt);
+    if (!meta) {
+      const role = body.aspectRatio === "9:16" ? "detail" : "main";
+      meta = {
+        role,
+        index: role === "main" ? ++mainPromptCount : ++detailPromptCount,
+        attempts: 0
+      };
+      promptMeta.set(prompt, meta);
+    }
+    meta.attempts += 1;
+    taskMeta.set(taskId, { role: meta.role, index: meta.index, attempt: meta.attempts });
+    if (meta.role === "detail" && meta.index === 3 && meta.attempts === 2) {
+      hashesBeforeRetry = await hashNativePngOutputs(outDir);
+      assert.equal(hashesBeforeRetry.size, 12);
+      assert.equal(Array.from(hashesBeforeRetry.keys()).some((key) => /^detail\/03-/.test(key)), false);
     }
     return new Response(JSON.stringify({ code: 200, data: { local_task_id: taskId } }), {
       status: 200,
@@ -1312,7 +1555,7 @@ test("native generator retries only the asset that returns wrong dimensions", as
     config.openai.aiEchoResolution = "1k";
     const generator = new OpenAiImageGenerator(config);
     const result = await generator.generate(
-      { ...makeTask(tmp, productPath), mainImageCount: 1, generateDetail: true },
+      { ...makeTask(tmp, productPath), mainImageCount: 5, generateDetail: true },
       makeBrand(),
       [{ sourceName: "product.png", path: productPath, mimeType: "image/png" }],
       makeAnalysis(),
@@ -1320,9 +1563,11 @@ test("native generator retries only the asset that returns wrong dimensions", as
     );
 
     assert.equal(result.failures?.length ?? 0, 0);
-    assert.equal(result.mainImages.length, 1);
+    assert.equal(result.mainImages.length, 5);
     assert.equal(result.detailImages.length, 8);
-    assert.equal(submissionCount, 10);
+    assert.equal(submissionCount, 14);
+    assert.ok(hashesBeforeRetry);
+    assert.deepEqual(await hashNativePngOutputs(outDir, /^detail\/03-/), hashesBeforeRetry);
     const retriedDetail = result.detailImages.find((image) => image.index === 3);
     assert.ok(retriedDetail);
     assert.equal(retriedDetail.attempts, 2);
@@ -1330,7 +1575,7 @@ test("native generator retries only the asset that returns wrong dimensions", as
     assert.equal(metadata.width, 1024);
     assert.equal(metadata.height, 1822);
     const prompts = JSON.parse(await fs.readFile(result.promptsPath!, "utf8")) as Array<Record<string, unknown>>;
-    assert.equal(prompts.length, 9);
+    assert.equal(prompts.length, 13);
     const detailPrompt = prompts.find((item) => item.role === "detail" && item.index === 3);
     assert.equal(detailPrompt?.status, "completed");
     assert.equal(detailPrompt?.attempts, 2);
@@ -1572,6 +1817,808 @@ test("native OpenAI provider standardizes Responses vertical images to detail-pa
   }
 });
 
+test("reuse validation standardizes a candidate without modifying the formal image when quality fails", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-reuse-candidate-"));
+  const productPath = path.join(tmp, "product.png");
+  const outputPath = path.join(tmp, "out", "main", "01-商品首图.png");
+  await writeNoiseImage(productPath, 600, 600);
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  const original = await largeImageBuffer(512, 512, "#8b5d3b");
+  await fs.writeFile(outputPath, original);
+  const originalHash = createHash("sha256").update(original).digest("hex");
+  const options = makeDirectAiEchoAssetOptions(tmp, productPath, outputPath);
+  const generator = new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp));
+  const reuseGenerator = generator as unknown as {
+    reuseNativeAsset(spec: typeof options.spec, formalPath: string): Promise<unknown | null>;
+  };
+
+  const reused = await reuseGenerator.reuseNativeAsset(options.spec, outputPath);
+
+  assert.equal(reused, null);
+  const preserved = await fs.readFile(outputPath);
+  assert.equal(createHash("sha256").update(preserved).digest("hex"), originalHash);
+  assert.equal((await sharp(outputPath).metadata()).width, 512);
+  const leftovers = (await fs.readdir(path.dirname(outputPath))).filter((name) => name.endsWith(".reuse.part"));
+  assert.deepEqual(leftovers, []);
+});
+
+test("aiEcho generator persists a task id before polling interruption and restart does not POST again", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-aiecho-ledger-restart-"));
+  const productPath = path.join(tmp, "product.png");
+  await writeNoiseImage(productPath, 600, 600);
+  const imageBuffer = await largeImageBuffer(1024, 1024);
+  const options = makeDirectAiEchoAssetOptions(tmp, productPath);
+  const ledgerPath = path.join(tmp, "out", "raw", "aiecho-tasks.json");
+  const originalFetch = globalThis.fetch;
+  const originalPollInterval = process.env.AIECHO_IMAGE_POLL_INTERVAL_MS;
+  let submitCount = 0;
+  let pollingInterrupted = true;
+  process.env.AIECHO_IMAGE_POLL_INTERVAL_MS = "250";
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "https://cdn.example.test/restart.png") {
+      return new Response(new Uint8Array(imageBuffer), { status: 200, headers: { "content-type": "image/png" } });
+    }
+    if (url.endsWith("/result")) {
+      return pollingInterrupted
+        ? new Response(JSON.stringify({ code: 200, data: { status: "interrupted-after-persist" } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+        : new Response(JSON.stringify({
+          code: 200,
+          data: { status: "completed", image_url: "https://cdn.example.test/restart.png" }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    submitCount += 1;
+    return new Response(JSON.stringify({ code: 200, data: { local_task_id: "persisted-task-id" } }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp)).generateValidatedNativeAsset(options),
+      /未知状态/
+    );
+    const interruptedEntry = (await new AiEchoTaskLedger(ledgerPath).snapshot()).tasks[0];
+    assert.equal(interruptedEntry.status, "polling");
+    assert.equal(interruptedEntry.localTaskId, "persisted-task-id");
+    assert.equal(interruptedEntry.attempts, 1);
+
+    pollingInterrupted = false;
+    const result = await new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp))
+      .generateValidatedNativeAsset(options);
+    assert.equal(result.taskId, "persisted-task-id");
+    assert.equal(submitCount, 1);
+    const completedEntry = (await new AiEchoTaskLedger(ledgerPath).snapshot()).tasks[0];
+    assert.equal(completedEntry.status, "completed");
+    assert.equal(completedEntry.attempts, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreTestEnvironment("AIECHO_IMAGE_POLL_INTERVAL_MS", originalPollInterval);
+  }
+});
+
+test("aiEcho generator keeps one POST across a pending local wait timeout and restart", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-aiecho-ledger-timeout-"));
+  const productPath = path.join(tmp, "product.png");
+  await writeNoiseImage(productPath, 600, 600);
+  const imageBuffer = await largeImageBuffer(1024, 1024);
+  const options = makeDirectAiEchoAssetOptions(tmp, productPath);
+  const originalFetch = globalThis.fetch;
+  const originalDateNow = Date.now;
+  const originalPollInterval = process.env.AIECHO_IMAGE_POLL_INTERVAL_MS;
+  const originalTimeout = process.env.AIECHO_IMAGE_TIMEOUT_MS;
+  let submitCount = 0;
+  let pending = true;
+  process.env.AIECHO_IMAGE_POLL_INTERVAL_MS = "250";
+  process.env.AIECHO_IMAGE_TIMEOUT_MS = "60000";
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "https://cdn.example.test/pending-timeout.png") {
+      return new Response(new Uint8Array(imageBuffer), { status: 200, headers: { "content-type": "image/png" } });
+    }
+    if (url.endsWith("/result")) {
+      return pending
+        ? new Response(JSON.stringify({ code: 200, data: { status: "pending" } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+        : new Response(JSON.stringify({
+          code: 200,
+          data: { status: "completed", image_url: "https://cdn.example.test/pending-timeout.png" }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    submitCount += 1;
+    return new Response(JSON.stringify({ code: 200, data: { local_task_id: "pending-task-id" } }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  }) as typeof fetch;
+
+  try {
+    const baseNow = originalDateNow();
+    let nowCalls = 0;
+    Date.now = () => baseNow + (nowCalls++ < 2 ? 0 : 60_001);
+    await assert.rejects(
+      new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp)).generateValidatedNativeAsset(options),
+      /aiEcho 生图超时/
+    );
+    Date.now = originalDateNow;
+    pending = false;
+
+    const result = await new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp))
+      .generateValidatedNativeAsset(options);
+    assert.equal(result.taskId, "pending-task-id");
+    assert.equal(submitCount, 1);
+  } finally {
+    Date.now = originalDateNow;
+    globalThis.fetch = originalFetch;
+    restoreTestEnvironment("AIECHO_IMAGE_POLL_INTERVAL_MS", originalPollInterval);
+    restoreTestEnvironment("AIECHO_IMAGE_TIMEOUT_MS", originalTimeout);
+  }
+});
+
+test("aiEcho generator retries a polling network interruption without a second POST", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-aiecho-ledger-network-"));
+  const productPath = path.join(tmp, "product.png");
+  await writeNoiseImage(productPath, 600, 600);
+  const imageBuffer = await largeImageBuffer(1024, 1024);
+  const options = makeDirectAiEchoAssetOptions(tmp, productPath);
+  const originalFetch = globalThis.fetch;
+  const originalPollInterval = process.env.AIECHO_IMAGE_POLL_INTERVAL_MS;
+  let submitCount = 0;
+  let resultChecks = 0;
+  process.env.AIECHO_IMAGE_POLL_INTERVAL_MS = "250";
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "https://cdn.example.test/network-resume.png") {
+      return new Response(new Uint8Array(imageBuffer), { status: 200, headers: { "content-type": "image/png" } });
+    }
+    if (url.endsWith("/result")) {
+      resultChecks += 1;
+      if (resultChecks === 1) {
+        throw Object.assign(new Error("poll socket reset"), { cause: { code: "ECONNRESET" } });
+      }
+      return new Response(JSON.stringify({
+        code: 200,
+        data: { status: "completed", image_url: "https://cdn.example.test/network-resume.png" }
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    submitCount += 1;
+    return new Response(JSON.stringify({ code: 200, data: { local_task_id: "network-task-id" } }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  }) as typeof fetch;
+
+  try {
+    const result = await new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp))
+      .generateValidatedNativeAsset(options);
+    assert.equal(result.taskId, "network-task-id");
+    assert.equal(resultChecks, 2);
+    assert.equal(submitCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreTestEnvironment("AIECHO_IMAGE_POLL_INTERVAL_MS", originalPollInterval);
+  }
+});
+
+test("aiEcho generator keeps the same task after a local Sharp decode failure", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-aiecho-ledger-sharp-"));
+  const productPath = path.join(tmp, "product.png");
+  await writeNoiseImage(productPath, 600, 600);
+  const validImage = await largeImageBuffer(1024, 1024);
+  const options = makeDirectAiEchoAssetOptions(tmp, productPath);
+  const ledgerPath = path.join(tmp, "out", "raw", "aiecho-tasks.json");
+  const originalFetch = globalThis.fetch;
+  const originalPollInterval = process.env.AIECHO_IMAGE_POLL_INTERVAL_MS;
+  let submitCount = 0;
+  let serveInvalidImage = true;
+  process.env.AIECHO_IMAGE_POLL_INTERVAL_MS = "250";
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "https://cdn.example.test/sharp-resume.png") {
+      return new Response(
+        serveInvalidImage ? new Uint8Array([1, 2, 3, 4, 5, 6]) : new Uint8Array(validImage),
+        { status: 200, headers: { "content-type": "image/png" } }
+      );
+    }
+    if (url.endsWith("/result")) {
+      return new Response(JSON.stringify({
+        code: 200,
+        data: { status: "completed", image_url: "https://cdn.example.test/sharp-resume.png" }
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    submitCount += 1;
+    return new Response(JSON.stringify({ code: 200, data: { local_task_id: "sharp-task-id" } }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp)).generateValidatedNativeAsset(options)
+    );
+    await assert.rejects(fs.access(options.outputPath));
+    assert.equal((await fs.stat(`${options.outputPath}.part`)).isFile(), true);
+    const failedLocally = (await new AiEchoTaskLedger(ledgerPath).snapshot()).tasks[0];
+    assert.equal(failedLocally.status, "validating");
+    assert.equal(failedLocally.localTaskId, "sharp-task-id");
+    assert.equal(failedLocally.attempts, 1);
+
+    serveInvalidImage = false;
+    const recovered = await new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp))
+      .generateValidatedNativeAsset(options);
+    assert.equal(recovered.taskId, "sharp-task-id");
+    assert.equal(submitCount, 1);
+    assert.equal((await new AiEchoTaskLedger(ledgerPath).snapshot()).tasks[0].status, "completed");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreTestEnvironment("AIECHO_IMAGE_POLL_INTERVAL_MS", originalPollInterval);
+  }
+});
+
+test("aiEcho generator leaves a partial candidate on response stream interruption and resumes the same task", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-aiecho-ledger-stream-"));
+  const productPath = path.join(tmp, "product.png");
+  await writeNoiseImage(productPath, 600, 600);
+  const validImage = await largeImageBuffer(1024, 1024);
+  const partialBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]);
+  const options = makeDirectAiEchoAssetOptions(tmp, productPath);
+  const ledgerPath = path.join(tmp, "out", "raw", "aiecho-tasks.json");
+  const originalFetch = globalThis.fetch;
+  const originalPollInterval = process.env.AIECHO_IMAGE_POLL_INTERVAL_MS;
+  let submitCount = 0;
+  let interruptStream = true;
+  process.env.AIECHO_IMAGE_POLL_INTERVAL_MS = "250";
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "https://cdn.example.test/stream-resume.png") {
+      if (interruptStream) {
+        let sent = false;
+        const stream = new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (!sent) {
+              sent = true;
+              controller.enqueue(partialBytes);
+              return;
+            }
+            controller.error(new Error("injected response stream interruption"));
+          }
+        });
+        return new Response(stream, { status: 200, headers: { "content-type": "image/png" } });
+      }
+      return new Response(new Uint8Array(validImage), { status: 200, headers: { "content-type": "image/png" } });
+    }
+    if (url.endsWith("/result")) {
+      return new Response(JSON.stringify({
+        code: 200,
+        data: { status: "completed", image_url: "https://cdn.example.test/stream-resume.png" }
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    submitCount += 1;
+    return new Response(JSON.stringify({ code: 200, data: { local_task_id: "stream-task-id" } }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp)).generateValidatedNativeAsset(options),
+      /stream interruption/
+    );
+    await assert.rejects(fs.access(options.outputPath));
+    assert.equal((await fs.stat(`${options.outputPath}.part`)).size, partialBytes.byteLength);
+    const interrupted = (await new AiEchoTaskLedger(ledgerPath).snapshot()).tasks[0];
+    assert.equal(interrupted.status, "downloading");
+    assert.equal(interrupted.localTaskId, "stream-task-id");
+
+    interruptStream = false;
+    const recovered = await new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp))
+      .generateValidatedNativeAsset(options);
+    assert.equal(recovered.taskId, "stream-task-id");
+    assert.equal(submitCount, 1);
+    await assert.rejects(fs.access(`${options.outputPath}.part`));
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreTestEnvironment("AIECHO_IMAGE_POLL_INTERVAL_MS", originalPollInterval);
+  }
+});
+
+test("aiEcho generator recovers a known task id when backup succeeds and the primary write fails", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-aiecho-ledger-submit-window-"));
+  const productPath = path.join(tmp, "product.png");
+  await writeNoiseImage(productPath, 600, 600);
+  const validImage = await largeImageBuffer(1024, 1024);
+  const options = makeDirectAiEchoAssetOptions(tmp, productPath);
+  const ledgerPath = path.join(tmp, "out", "raw", "aiecho-tasks.json");
+  let failNextPrimary = false;
+  const ledger = new AiEchoTaskLedger(ledgerPath, {
+    beforeAtomicWrite(target) {
+      if (target === "primary" && failNextPrimary) {
+        failNextPrimary = false;
+        throw new Error("injected primary failure after backup");
+      }
+    }
+  });
+  const identity: AiEchoTaskIdentity = {
+    fingerprint: createAiEchoTaskFingerprint({
+      stableProductInput: { sku: "submit-window" },
+      referenceImageHashes: ["a".repeat(64)],
+      role: "main",
+      index: 1,
+      aspectRatio: "1:1",
+      model: "gpt-2.0",
+      resolution: "1k"
+    }),
+    role: "main",
+    index: 1,
+    aspectRatio: "1:1",
+    model: "gpt-2.0",
+    resolution: "1k"
+  };
+  await ledger.ensureEntries([identity]);
+  options.aiEchoLedger = { ledger, identity };
+  const originalFetch = globalThis.fetch;
+  const originalPollInterval = process.env.AIECHO_IMAGE_POLL_INTERVAL_MS;
+  let submitCount = 0;
+  process.env.AIECHO_IMAGE_POLL_INTERVAL_MS = "250";
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "https://cdn.example.test/submit-window.png") {
+      return new Response(new Uint8Array(validImage), { status: 200, headers: { "content-type": "image/png" } });
+    }
+    if (url.endsWith("/result")) {
+      return new Response(JSON.stringify({
+        code: 200,
+        data: { status: "completed", image_url: "https://cdn.example.test/submit-window.png" }
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    submitCount += 1;
+    failNextPrimary = true;
+    return new Response(JSON.stringify({ code: 200, data: { local_task_id: "backup-window-task-id" } }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  }) as typeof fetch;
+
+  try {
+    const result = await new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp))
+      .generateValidatedNativeAsset(options);
+    assert.equal(result.taskId, "backup-window-task-id");
+    assert.equal(submitCount, 1);
+    const completed = (await new AiEchoTaskLedger(ledgerPath).snapshot()).tasks[0];
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.localTaskId, "backup-window-task-id");
+    assert.equal(completed.attempts, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreTestEnvironment("AIECHO_IMAGE_POLL_INTERVAL_MS", originalPollInterval);
+  }
+});
+
+test("aiEcho generator keeps an interrupted download as part and restart resumes the same task", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-aiecho-ledger-download-"));
+  const productPath = path.join(tmp, "product.png");
+  await writeNoiseImage(productPath, 600, 600);
+  const imageBuffer = await largeImageBuffer(1024, 1024);
+  const outputPath = path.join(tmp, "out", "main", "01-商品首图.png");
+  const options = makeDirectAiEchoAssetOptions(tmp, productPath, outputPath);
+  const ledgerPath = path.join(tmp, "out", "raw", "aiecho-tasks.json");
+  const originalFetch = globalThis.fetch;
+  const originalPollInterval = process.env.AIECHO_IMAGE_POLL_INTERVAL_MS;
+  let submitCount = 0;
+  let imageDownloads = 0;
+  process.env.AIECHO_IMAGE_POLL_INTERVAL_MS = "250";
+  await fs.mkdir(outputPath, { recursive: true });
+  const renameBlockerPath = path.join(outputPath, "force-atomic-rename-failure.txt");
+  await fs.writeFile(renameBlockerPath, "fault injection", "utf8");
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "https://cdn.example.test/download-resume.png") {
+      imageDownloads += 1;
+      return new Response(new Uint8Array(imageBuffer), { status: 200, headers: { "content-type": "image/png" } });
+    }
+    if (url.endsWith("/result")) {
+      return new Response(JSON.stringify({
+        code: 200,
+        data: { status: "completed", image_url: "https://cdn.example.test/download-resume.png" }
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    submitCount += 1;
+    return new Response(JSON.stringify({ code: 200, data: { local_task_id: "download-task-id" } }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp)).generateValidatedNativeAsset(options)
+    );
+    assert.equal((await fs.stat(`${outputPath}.part`)).isFile(), true);
+    const interruptedEntry = (await new AiEchoTaskLedger(ledgerPath).snapshot()).tasks[0];
+    assert.equal(interruptedEntry.status, "validating");
+    assert.equal(interruptedEntry.localTaskId, "download-task-id");
+    assert.equal((await fs.stat(outputPath)).isFile(), false);
+
+    await fs.unlink(renameBlockerPath);
+    await fs.rmdir(outputPath);
+    const result = await new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp))
+      .generateValidatedNativeAsset(options);
+    assert.equal(result.taskId, "download-task-id");
+    assert.equal(submitCount, 1);
+    assert.equal(imageDownloads, 2);
+    await assert.rejects(fs.access(`${outputPath}.part`));
+    assert.equal((await fs.stat(outputPath)).isFile(), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreTestEnvironment("AIECHO_IMAGE_POLL_INTERVAL_MS", originalPollInterval);
+  }
+});
+
+test("explicit visual replacement resumes the same task when formal replace succeeds before completion persistence fails", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-aiecho-visual-completion-window-"));
+  const productPath = path.join(tmp, "product.png");
+  const outputPath = path.join(tmp, "out", "main", "01-商品首图.png");
+  await writeNoiseImage(productPath, 600, 600);
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  const oldImage = await largeImageBuffer(1024, 1024, "#6f4e37");
+  const replacementImage = await largeImageBuffer(1024, 1024, "#d8c9a7");
+  await fs.writeFile(outputPath, oldImage);
+  const oldHash = createHash("sha256").update(oldImage).digest("hex");
+  const ledgerPath = path.join(tmp, "out", "raw", "aiecho-tasks.json");
+  let failAfterFormalReplace = false;
+  const faultedLedger = new AiEchoTaskLedger(ledgerPath, {
+    async beforeAtomicWrite(target) {
+      if (target !== "backup" || !failAfterFormalReplace) return;
+      const formalBytes = await fs.readFile(outputPath);
+      const formalHash = createHash("sha256").update(formalBytes).digest("hex");
+      if (formalHash !== oldHash) {
+        failAfterFormalReplace = false;
+        throw new Error("injected completion persistence failure after formal replace");
+      }
+    }
+  });
+  const identity: AiEchoTaskIdentity = {
+    fingerprint: createAiEchoTaskFingerprint({
+      stableProductInput: { sku: "visual-completion-window" },
+      referenceImageHashes: ["c".repeat(64)],
+      role: "main",
+      index: 1,
+      aspectRatio: "1:1",
+      model: "gpt-2.0",
+      resolution: "1k"
+    }),
+    role: "main",
+    index: 1,
+    aspectRatio: "1:1",
+    model: "gpt-2.0",
+    resolution: "1k"
+  };
+  await faultedLedger.ensureEntries([identity]);
+  await faultedLedger.markCompleted(identity.fingerprint, "existing-valid-file");
+  const options = makeDirectAiEchoAssetOptions(tmp, productPath, outputPath);
+  options.aiEchoLedger = { ledger: faultedLedger, identity };
+  options.forceNewSubmission = true;
+  const originalFetch = globalThis.fetch;
+  const originalPollInterval = process.env.AIECHO_IMAGE_POLL_INTERVAL_MS;
+  let submitCount = 0;
+  let downloadCount = 0;
+  process.env.AIECHO_IMAGE_POLL_INTERVAL_MS = "250";
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "https://cdn.example.test/visual-completion-window.png") {
+      downloadCount += 1;
+      return new Response(new Uint8Array(replacementImage), {
+        status: 200,
+        headers: { "content-type": "image/png" }
+      });
+    }
+    if (url.endsWith("/result")) {
+      return new Response(JSON.stringify({
+        code: 200,
+        data: { status: "completed", image_url: "https://cdn.example.test/visual-completion-window.png" }
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    submitCount += 1;
+    return new Response(JSON.stringify({ code: 200, data: { local_task_id: "visual-replacement-task-id" } }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  }) as typeof fetch;
+
+  try {
+    failAfterFormalReplace = true;
+    await assert.rejects(
+      new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp)).generateValidatedNativeAsset(options),
+      /completion persistence failure/
+    );
+    const formalAfterFailure = await fs.readFile(outputPath);
+    assert.notEqual(createHash("sha256").update(formalAfterFailure).digest("hex"), oldHash);
+    assert.equal((await sharp(outputPath).metadata()).width, 1024);
+    const interrupted = (await new AiEchoTaskLedger(ledgerPath).snapshot()).tasks[0];
+    assert.equal(interrupted.status, "validating");
+    assert.equal(interrupted.localTaskId, "visual-replacement-task-id");
+    assert.equal(submitCount, 1);
+
+    options.aiEchoLedger = { ledger: new AiEchoTaskLedger(ledgerPath), identity };
+    const recovered = await new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp))
+      .generateValidatedNativeAsset(options);
+    assert.equal(recovered.taskId, "visual-replacement-task-id");
+    assert.equal(submitCount, 1);
+    assert.equal(downloadCount, 2);
+    const completed = (await new AiEchoTaskLedger(ledgerPath).snapshot()).tasks[0];
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.localTaskId, "visual-replacement-task-id");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreTestEnvironment("AIECHO_IMAGE_POLL_INTERVAL_MS", originalPollInterval);
+  }
+});
+
+test("aiEcho generator fails closed with zero provider calls when both ledger files are corrupt", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-aiecho-ledger-corrupt-"));
+  const productPath = path.join(tmp, "product.png");
+  await writeNoiseImage(productPath, 600, 600);
+  const options = makeDirectAiEchoAssetOptions(tmp, productPath);
+  const ledgerPath = path.join(tmp, "out", "raw", "aiecho-tasks.json");
+  await fs.mkdir(path.dirname(ledgerPath), { recursive: true });
+  await fs.writeFile(ledgerPath, "{corrupt-primary", "utf8");
+  await fs.writeFile(`${ledgerPath}.bak`, "{corrupt-backup", "utf8");
+  const originalFetch = globalThis.fetch;
+  let providerCalls = 0;
+  globalThis.fetch = (async () => {
+    providerCalls += 1;
+    throw new Error("provider must not be called");
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp)).generateValidatedNativeAsset(options),
+      /主文件和备份都无法安全读取/
+    );
+    assert.equal(providerCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("aiEcho generator marks an uncertain submit ambiguous and restart never POSTs again", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-aiecho-ledger-ambiguous-"));
+  const productPath = path.join(tmp, "product.png");
+  await writeNoiseImage(productPath, 600, 600);
+  const validExistingImage = await largeImageBuffer(1024, 1024);
+  const options = makeDirectAiEchoAssetOptions(tmp, productPath);
+  const ledgerPath = path.join(tmp, "out", "raw", "aiecho-tasks.json");
+  const originalFetch = globalThis.fetch;
+  let providerCalls = 0;
+  globalThis.fetch = (async () => {
+    providerCalls += 1;
+    throw Object.assign(new Error("submit response was lost"), { cause: { code: "ECONNRESET" } });
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp)).generateValidatedNativeAsset(options),
+      /已停止自动重提/
+    );
+    const ambiguousEntry = (await new AiEchoTaskLedger(ledgerPath).snapshot()).tasks[0];
+    assert.equal(ambiguousEntry.status, "ambiguous");
+    assert.equal(ambiguousEntry.localTaskId, undefined);
+    assert.equal(providerCalls, 1);
+
+    await assert.rejects(
+      new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp)).generateValidatedNativeAsset(options),
+      /已停止自动重提/
+    );
+    assert.equal(providerCalls, 1);
+
+    // Even a structurally valid file at the normal output path must not wash
+    // away the uncertain paid submission through the reuse fast path.
+    await fs.mkdir(path.dirname(options.outputPath), { recursive: true });
+    await fs.writeFile(options.outputPath, validExistingImage);
+    await assert.rejects(
+      new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp)).generate(
+        options.task,
+        makeBrand(),
+        options.productImages,
+        makeAnalysis(),
+        path.join(tmp, "out")
+      ),
+      /已停止自动重提/
+    );
+    const stillAmbiguous = (await new AiEchoTaskLedger(ledgerPath).snapshot()).tasks[0];
+    assert.equal(stillAmbiguous.status, "ambiguous");
+    assert.equal(providerCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("aiEcho generator never resubmits a completed legacy file after that file is deleted", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-aiecho-ledger-completed-no-id-"));
+  const productPath = path.join(tmp, "product.png");
+  const outputDir = path.join(tmp, "out");
+  const outputPath = path.join(outputDir, "main", "01-商品首图.png");
+  await writeNoiseImage(productPath, 600, 600);
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await fs.writeFile(outputPath, await largeImageBuffer(1024, 1024));
+  const originalFetch = globalThis.fetch;
+  let providerCalls = 0;
+  globalThis.fetch = (async () => {
+    providerCalls += 1;
+    throw new Error("provider must not be called");
+  }) as typeof fetch;
+  const task = { ...makeTask(tmp, productPath), mainImageCount: 1, generateDetail: false };
+  const productImages = [{ sourceName: "product.png", path: productPath, mimeType: "image/png" }] as const;
+  const ledgerPath = path.join(outputDir, "raw", "aiecho-tasks.json");
+
+  try {
+    const first = await new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp)).generate(
+      task,
+      makeBrand(),
+      [...productImages],
+      makeAnalysis(),
+      outputDir
+    );
+    assert.equal(first.mainImages.length, 1);
+    assert.equal(providerCalls, 0);
+    const reconciled = (await new AiEchoTaskLedger(ledgerPath).snapshot()).tasks[0];
+    assert.equal(reconciled.status, "completed");
+    assert.equal(reconciled.localTaskId, undefined);
+
+    await fs.unlink(outputPath);
+    await assert.rejects(
+      new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp)).generate(
+        task,
+        makeBrand(),
+        [...productImages],
+        makeAnalysis(),
+        outputDir
+      ),
+      /所有主图均生成失败/
+    );
+    assert.equal(providerCalls, 0);
+    const terminal = (await new AiEchoTaskLedger(ledgerPath).snapshot()).tasks[0];
+    assert.equal(terminal.status, "completed");
+    assert.equal(terminal.localTaskId, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("aiEcho generator keeps one POST across polling HTTP 503 and restart", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-aiecho-ledger-503-"));
+  const productPath = path.join(tmp, "product.png");
+  await writeNoiseImage(productPath, 600, 600);
+  const imageBuffer = await largeImageBuffer(1024, 1024);
+  const options = makeDirectAiEchoAssetOptions(tmp, productPath);
+  const originalFetch = globalThis.fetch;
+  const originalPollInterval = process.env.AIECHO_IMAGE_POLL_INTERVAL_MS;
+  let submitCount = 0;
+  let serviceUnavailable = true;
+  process.env.AIECHO_IMAGE_POLL_INTERVAL_MS = "250";
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "https://cdn.example.test/http-503-resume.png") {
+      return new Response(new Uint8Array(imageBuffer), { status: 200, headers: { "content-type": "image/png" } });
+    }
+    if (url.endsWith("/result")) {
+      return serviceUnavailable
+        ? new Response(JSON.stringify({ code: 503, msg: "temporary unavailable" }), {
+          status: 503,
+          headers: { "content-type": "application/json" }
+        })
+        : new Response(JSON.stringify({
+          code: 200,
+          data: { status: "completed", image_url: "https://cdn.example.test/http-503-resume.png" }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    submitCount += 1;
+    return new Response(JSON.stringify({ code: 200, data: { local_task_id: "http-503-task-id" } }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp)).generateValidatedNativeAsset(options),
+      /HTTP 503/
+    );
+    serviceUnavailable = false;
+    const result = await new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp))
+      .generateValidatedNativeAsset(options);
+    assert.equal(result.taskId, "http-503-task-id");
+    assert.equal(submitCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreTestEnvironment("AIECHO_IMAGE_POLL_INTERVAL_MS", originalPollInterval);
+  }
+});
+
+test("aiEcho generator redownloads a deleted completed file from the same task", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-aiecho-ledger-redownload-"));
+  const productPath = path.join(tmp, "product.png");
+  await writeNoiseImage(productPath, 600, 600);
+  const imageBuffer = await largeImageBuffer(1024, 1024);
+  const options = makeDirectAiEchoAssetOptions(tmp, productPath);
+  const originalFetch = globalThis.fetch;
+  const originalPollInterval = process.env.AIECHO_IMAGE_POLL_INTERVAL_MS;
+  let submitCount = 0;
+  let imageDownloads = 0;
+  process.env.AIECHO_IMAGE_POLL_INTERVAL_MS = "250";
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "https://cdn.example.test/redownload.png") {
+      imageDownloads += 1;
+      return new Response(new Uint8Array(imageBuffer), { status: 200, headers: { "content-type": "image/png" } });
+    }
+    if (url.endsWith("/result")) {
+      return new Response(JSON.stringify({
+        code: 200,
+        data: { status: "completed", image_url: "https://cdn.example.test/redownload.png" }
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    submitCount += 1;
+    return new Response(JSON.stringify({ code: 200, data: { local_task_id: "redownload-task-id" } }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  }) as typeof fetch;
+
+  try {
+    await new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp)).generateValidatedNativeAsset(options);
+    await fs.unlink(options.outputPath);
+    const result = await new OpenAiImageGenerator(makeOneKilobyteAiEchoConfig(tmp))
+      .generateValidatedNativeAsset(options);
+    assert.equal(result.taskId, "redownload-task-id");
+    assert.equal(submitCount, 1);
+    assert.equal(imageDownloads, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreTestEnvironment("AIECHO_IMAGE_POLL_INTERVAL_MS", originalPollInterval);
+  }
+});
+
+function makeDirectAiEchoAssetOptions(
+  tmp: string,
+  productPath: string,
+  outputPath = path.join(tmp, "out", "main", "01-商品首图.png")
+): Parameters<OpenAiImageGenerator["generateValidatedNativeAsset"]>[0] {
+  return {
+    spec: {
+      role: "main",
+      index: 1,
+      title: "商品首图",
+      aspectRatio: "1:1",
+      copy: ["测试主张"],
+      prompt: "CURRENT FRAME MISSION: render the exact product in a clean square ecommerce frame."
+    },
+    outputPath,
+    productImages: [{ sourceName: "product.png", path: productPath, mimeType: "image/png" }],
+    task: { ...makeTask(tmp, productPath), mainImageCount: 1, generateDetail: false },
+    invalidDir: path.join(tmp, "out", "raw", "invalid-native")
+  };
+}
+
+function makeOneKilobyteAiEchoConfig(tmp: string): AppConfig {
+  const config = makeConfig(tmp);
+  config.openai.aiEchoResolution = "1k";
+  return config;
+}
+
+function restoreTestEnvironment(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
 async function writeNoiseImage(filePath: string, width: number, height: number): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const pixels = randomFillSync(Buffer.alloc(width * height * 3));
@@ -1580,17 +2627,32 @@ async function writeNoiseImage(filePath: string, width: number, height: number):
     .toFile(filePath);
 }
 
-async function largeImageBuffer(width: number, height: number): Promise<Buffer> {
+async function largeImageBuffer(width: number, height: number, background = "#dce8c5"): Promise<Buffer> {
   return sharp({
     create: {
       width,
       height,
       channels: 3,
-      background: "#dce8c5"
+      background
     }
   })
     .png({ compressionLevel: 0 })
     .toBuffer();
+}
+
+async function hashNativePngOutputs(outputDir: string, exclude?: RegExp): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  for (const group of ["main", "detail"] as const) {
+    const directory = path.join(outputDir, group);
+    const files = await fs.readdir(directory).catch(() => [] as string[]);
+    for (const file of files.filter((candidate) => candidate.toLowerCase().endsWith(".png")).sort()) {
+      const key = `${group}/${file}`;
+      if (exclude?.test(key)) continue;
+      const bytes = await fs.readFile(path.join(directory, file));
+      result.set(key, createHash("sha256").update(bytes).digest("hex"));
+    }
+  }
+  return result;
 }
 
 function makeTask(tmp: string, productPath: string): ProductTask {

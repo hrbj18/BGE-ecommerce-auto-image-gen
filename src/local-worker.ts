@@ -11,6 +11,12 @@ import type {
   TaskSource
 } from "./types.ts";
 import { ensureDir, inferMimeType, writeJson } from "./fs-utils.ts";
+import { detailImageCountForTask } from "./generation-profiles.mjs";
+import {
+  imageDimensionsForRole,
+  imageResolutionProfileForTask,
+  type ImageResolutionProfile,
+} from "./image-resolution-profiles.mjs";
 import { Logger } from "./logger.ts";
 import { publishLocalImages, type PublishedImages } from "./temporary-image-publisher.ts";
 
@@ -82,7 +88,11 @@ export class LocalExcelWorker {
         !localImageTestMode() &&
         (this.options.config.worker.forceRegenerate ||
           (!task.referenceImageUrls.length &&
-            !(await hasReusableNativeOutputs(task, outputDir, this.options.config.openai.aiEchoResolution))))
+            !(await hasReusableNativeOutputs(
+              task,
+              outputDir,
+              imageResolutionProfileForTask(task, this.options.config.openai.aiEchoResolution),
+            ))))
       ) {
         publishedImages = await publishLocalImages({
           imagePaths: [...task.localProductImages, ...localReferenceImages],
@@ -140,18 +150,19 @@ function localImageTestMode(): boolean {
 async function hasReusableNativeOutputs(
   task: ProductTask,
   outputDir: string,
-  resolution: AppConfig["openai"]["aiEchoResolution"]
+  resolution: ImageResolutionProfile
 ): Promise<boolean> {
-  const expectedMain = nativeResolutionPixels(resolution);
-  const expectedDetail = nativeDetailHeight(resolution);
+  const mainDimensions = imageDimensionsForRole(resolution, "main");
+  const detailDimensions = imageDimensionsForRole(resolution, "detail");
   for (let index = 1; index <= task.mainImageCount; index += 1) {
     const files = await matchingImageFiles(path.join(outputDir, "main"), index);
-    if (!(await anyImageHasUsableSize(files, expectedMain, expectedMain))) return false;
+    if (!(await anyImageHasUsableSize(files, mainDimensions.width, mainDimensions.height))) return false;
   }
-  if (!task.generateDetail) return true;
-  for (let index = 1; index <= 8; index += 1) {
+  const detailImageCount = detailImageCountForTask(task);
+  if (!detailImageCount) return true;
+  for (let index = 1; index <= detailImageCount; index += 1) {
     const files = await matchingImageFiles(path.join(outputDir, "detail"), index);
-    if (!(await anyImageHasUsableSize(files, expectedMain, expectedDetail, true))) return false;
+    if (!(await anyImageHasUsableSize(files, detailDimensions.width, detailDimensions.height, true))) return false;
   }
   return true;
 }
@@ -182,7 +193,7 @@ async function anyImageHasUsableSize(
       if (width === expectedWidth && height === expectedHeight) return true;
       const expectedRatio = expectedWidth / expectedHeight;
       const actualRatio = width && height ? width / height : 0;
-      if (allowSameRatio && width >= 1000 && height >= 1000 && Math.abs(expectedRatio - actualRatio) < 0.012) {
+      if (allowSameRatio && width >= expectedWidth && height >= expectedHeight && Math.abs(expectedRatio - actualRatio) < 0.012) {
         return true;
       }
     } catch {
@@ -190,17 +201,6 @@ async function anyImageHasUsableSize(
     }
   }
   return false;
-}
-
-function nativeResolutionPixels(resolution: "1k" | "2k" | "4k"): number {
-  if (resolution === "1k") return 1024;
-  if (resolution === "4k") return 4096;
-  return 2048;
-}
-
-function nativeDetailHeight(resolution: "1k" | "2k" | "4k"): number {
-  const raw = Math.ceil(nativeResolutionPixels(resolution) * 16 / 9);
-  return raw % 2 === 0 ? raw : raw + 1;
 }
 
 async function toLocalProductImages(paths: string[]): Promise<LocalProductImage[]> {

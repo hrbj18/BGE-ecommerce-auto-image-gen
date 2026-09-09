@@ -105,7 +105,7 @@ export function buildCreativeDirectorRequestPrompt(
   return [
     "You are a senior ecommerce creative director and storyboard designer.",
     "Return JSON only. Do not use Markdown and do not add fields outside the requested schema.",
-    "Your job is to turn the supplied 13-screen base storyboard into thirteen materially different, executable image directions.",
+    `Your job is to turn the supplied ${fallback.frames.length}-screen base storyboard into ${fallback.frames.length} materially different, executable image directions.`,
     "Do not change role, index, selling-point focus, product facts, platform, language, aspect ratio or exact visible-copy policy.",
     "Do not invent specifications, materials, certifications, efficacy, prices, ratings, awards or promotions.",
     "For every frame, make the selling point visible through a concrete action, state, structure, close-up, comparison, environment or visual metaphor. Text alone is not evidence.",

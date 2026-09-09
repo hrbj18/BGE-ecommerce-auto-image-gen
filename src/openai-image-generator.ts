@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import { openAsBlob } from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 import type {
   AppConfig,
@@ -20,6 +21,18 @@ import type {
 } from "./types.ts";
 import { renderBrandedMain, renderDetailModule } from "./brand-renderer.ts";
 import { ensureDir, safeSegment, sha256File, writeJson, zipFiles } from "./fs-utils.ts";
+import { detailImageCountForTask, overviewFilename } from "./generation-profiles.mjs";
+import {
+  imageDimensionsForRole,
+  imageResolutionProfileForTask,
+  type ImageResolutionProfile,
+  type ProviderImageResolution,
+} from "./image-resolution-profiles.mjs";
+import {
+  aspectRatioForRole,
+  imageAspectRatioProfileForTask,
+  type ImageAspectRatioProfile,
+} from "./image-aspect-ratio-profiles.mjs";
 import { normalizeSquareImage } from "./image-utils.ts";
 import { checkGeneratedImage } from "./quality-checker.ts";
 import { auditNativePromptSet, auditTaskIdentity, classifyProductIdentity, formatPromptAuditFailure } from "./prompt-audit.ts";
@@ -47,6 +60,13 @@ import {
   type CreativePlan,
   type DirectedStoryboardFrame
 } from "./creative-director.ts";
+import {
+  AIECHO_TASK_LEDGER_FILENAME,
+  AiEchoTaskAmbiguousError,
+  AiEchoTaskLedger,
+  createAiEchoTaskFingerprint,
+  type AiEchoTaskIdentity
+} from "./aiecho-task-ledger.ts";
 
 type ImageQualityResult = Awaited<ReturnType<typeof checkGeneratedImage>>;
 
@@ -71,6 +91,12 @@ export interface NativeImageSpec {
 interface NativeImageJob {
   spec: NativeImageSpec;
   outputPath: string;
+  aiEchoLedger?: AiEchoLedgerJobContext;
+}
+
+interface AiEchoLedgerJobContext {
+  ledger: AiEchoTaskLedger;
+  identity: AiEchoTaskIdentity;
 }
 
 interface AiEchoSubmission {
@@ -88,6 +114,13 @@ interface NativeGeneratedAssetResult extends AiEchoGenerationResult {
   width: number;
   height: number;
   quality: ImageQualityResult;
+}
+
+class NativeImageQualityRejectedError extends Error {
+  constructor(warnings: string[]) {
+    super(`generated image validation failed: ${warnings.join("; ")}`);
+    this.name = "NativeImageQualityRejectedError";
+  }
 }
 
 interface NativePromptRecord {
@@ -331,7 +364,7 @@ export class OpenAiImageGenerator implements ImageGenerator {
     if (!mainImages.length) {
       throw new Error(`所有主图均生成失败：${failures.map((item) => item.error).join("；")}`);
     }
-    const detailImages = task.generateDetail
+    const detailImages = detailImageCountForTask(task)
       ? await this.generateDetailModules(task, brand, normalizedProductPath, detailDir, mainImages, failures)
       : [];
 
@@ -398,10 +431,19 @@ export class OpenAiImageGenerator implements ImageGenerator {
     outputDir: string
   ): Promise<ProductOutput> {
     const startedAt = new Date();
+    const imageResolution = imageResolutionProfileForTask(task, this.config.openai.aiEchoResolution);
+    const imageAspectRatioProfile = imageAspectRatioProfileForTask(task);
     const mainDir = path.join(outputDir, "main");
     const detailDir = path.join(outputDir, "detail");
     const rawDir = path.join(outputDir, "raw");
     await Promise.all([ensureDir(mainDir), ensureDir(detailDir), ensureDir(rawDir)]);
+    const aiEchoLedger = this.config.openai.imageProvider === "aiecho" && !localImageTestMode()
+      ? new AiEchoTaskLedger(path.join(rawDir, AIECHO_TASK_LEDGER_FILENAME))
+      : undefined;
+    // Validate or recover the ledger before vision/text enrichment as well as
+    // before image submission. Dual-file corruption must fail closed without
+    // reaching any paid provider path.
+    if (aiEchoLedger) await aiEchoLedger.recoverInterruptedSubmissions();
     if (this.config.worker.forceRegenerate) {
       await clearNativeGeneratedOutputs(outputDir, mainDir, detailDir);
     }
@@ -445,7 +487,7 @@ export class OpenAiImageGenerator implements ImageGenerator {
     const specs = buildNativeImageSpecs(task, brand, enrichedAnalysis, productVisualInsight, creativePlan);
     const selectedSpecs = [
       ...specs.filter((spec) => spec.role === "main").slice(0, task.mainImageCount),
-      ...(task.generateDetail ? specs.filter((spec) => spec.role === "detail") : [])
+      ...specs.filter((spec) => spec.role === "detail").slice(0, detailImageCountForTask(task))
     ];
     const promptAudit = auditNativePromptSet(task, selectedSpecs, {
       trustedVisualEvidence: [productVisualInsight.summary, ...productVisualInsight.productFacts].filter(Boolean).join("\n")
@@ -470,13 +512,23 @@ export class OpenAiImageGenerator implements ImageGenerator {
     const detailImages: GeneratedAsset[] = [];
     const failures: AssetFailure[] = [];
 
-    const jobs = selectedSpecs.map((spec) => ({
+    const jobs: NativeImageJob[] = selectedSpecs.map((spec) => ({
       spec,
       outputPath: path.join(
         spec.role === "main" ? mainDir : detailDir,
         `${pad(spec.index)}-${safeSegment(spec.title)}.png`
       )
     }));
+    if (aiEchoLedger) {
+      const referenceImageHashes = await Promise.all(productImages.map((image) => sha256File(image.path)));
+      for (const job of jobs) {
+        job.aiEchoLedger = {
+          ledger: aiEchoLedger,
+          identity: aiEchoTaskIdentity(task, job.spec, referenceImageHashes, imageResolution.providerResolution)
+        };
+      }
+      await aiEchoLedger.ensureEntries(jobs.map((job) => job.aiEchoLedger!.identity));
+    }
     const promptsPath = path.join(outputDir, "prompts.json");
     const promptRecords = jobs.map(({ spec, outputPath }) => buildNativePromptRecord(spec, outputPath));
     const promptRecordByKey = new Map(promptRecords.map((record) => [nativeSpecKey(record.role, record.index), record]));
@@ -491,14 +543,36 @@ export class OpenAiImageGenerator implements ImageGenerator {
     };
     await persistPromptRecords();
     const pendingJobs: NativeImageJob[] = [];
-    for (const { spec, outputPath } of jobs) {
-      const reused = this.config.worker.forceRegenerate ? null : await this.reuseNativeAsset(spec, outputPath);
+    for (const job of jobs) {
+      const { spec, outputPath } = job;
+      const ledgerEntry = job.aiEchoLedger
+        ? await job.aiEchoLedger.ledger.get(job.aiEchoLedger.identity.fingerprint)
+        : undefined;
+      if (ledgerEntry?.status === "ambiguous") {
+        throw new AiEchoTaskAmbiguousError(job.aiEchoLedger!.identity.fingerprint);
+      }
+      // A valid-looking formal image may be the previous accepted image kept
+      // while a replacement task is still running. Only planned legacy work or
+      // an already-completed ledger entry may take the reuse fast path.
+      const ledgerRequiresProviderRecovery = Boolean(
+        ledgerEntry && !["planned", "completed"].includes(ledgerEntry.status)
+      );
+      const reused = this.config.worker.forceRegenerate || ledgerRequiresProviderRecovery
+        ? null
+        : await this.reuseNativeAsset(spec, outputPath, task);
       if (reused) {
+        if (job.aiEchoLedger) {
+          await job.aiEchoLedger.ledger.markCompleted(
+            job.aiEchoLedger.identity.fingerprint,
+            "existing-valid-file"
+          );
+        }
         if (spec.role === "main") mainImages.push(reused);
         else detailImages.push(reused);
+        await fs.rm(`${outputPath}.part`, { force: true });
         updatePromptRecord(spec, { status: "reused", reused: true, attempts: 0 });
       } else {
-        pendingJobs.push({ spec, outputPath });
+        pendingJobs.push(job);
       }
     }
 
@@ -516,7 +590,7 @@ export class OpenAiImageGenerator implements ImageGenerator {
     const imageJobConcurrency = nativeImageJobConcurrency(this.config.openai.imageProvider);
     const imageJobCooldownMs = nativeImageJobCooldownMs(this.config.openai.imageProvider);
     console.log(
-      `[native-image] provider=${this.config.openai.imageProvider} pending=${pendingJobs.length} concurrency=${imageJobConcurrency} startCooldownMs=${imageJobCooldownMs} requestTimeoutMs=${openAiImageTimeoutMs()}`
+      `[native-image] provider=${this.config.openai.imageProvider} resolution=${imageResolution.id} upstreamResolution=${imageResolution.providerResolution} pending=${pendingJobs.length} concurrency=${imageJobConcurrency} startCooldownMs=${imageJobCooldownMs} requestTimeoutMs=${openAiImageTimeoutMs()}`
     );
     publishProgress(
       mainImages.length < task.mainImageCount ? "generating-main" : "generating-detail",
@@ -530,7 +604,7 @@ export class OpenAiImageGenerator implements ImageGenerator {
         initialConcurrency: imageJobConcurrency,
         cooldownMs: imageJobCooldownMs,
         label: ({ spec }) => nativeImageJobLabel(spec),
-        mapper: async ({ spec, outputPath }, _index, schedulerAttempt) => {
+        mapper: async ({ spec, outputPath, aiEchoLedger }, _index, schedulerAttempt) => {
           try {
             const generation = await this.generateValidatedNativeAsset({
               spec,
@@ -538,7 +612,9 @@ export class OpenAiImageGenerator implements ImageGenerator {
               productImages,
               task,
               invalidDir: path.join(rawDir, "invalid-native"),
-              attemptNumber: schedulerAttempt
+              attemptNumber: schedulerAttempt,
+              aiEchoLedger,
+              forceNewSubmission: this.config.worker.forceRegenerate
             });
             const normalized = generation;
             const quality = normalized.quality;
@@ -600,7 +676,7 @@ export class OpenAiImageGenerator implements ImageGenerator {
             progress.mainCompleted < task.mainImageCount ? "generating-main" : "generating-detail",
             progress.mainCompleted < task.mainImageCount
               ? `主图 ${progress.mainCompleted}/${task.mainImageCount}，首图完成后可立即查看。`
-              : `详情页 ${progress.detailCompleted}/8，主图已可查看。`
+              : `详情页 ${progress.detailCompleted}/${detailImageCountForTask(task)}，主图已可查看。`
           );
         },
         onRetry: ({ delayMs, concurrency, backpressure }) => {
@@ -676,7 +752,8 @@ export class OpenAiImageGenerator implements ImageGenerator {
                 productImages,
                 task,
                 invalidDir: path.join(rawDir, "invalid-native"),
-                attemptNumber: 100 + recoveryAttempt
+                attemptNumber: 100 + recoveryAttempt,
+                aiEchoLedger: job.aiEchoLedger
               });
               return { generation, recoveryAttempt };
             } catch (error) {
@@ -753,23 +830,32 @@ export class OpenAiImageGenerator implements ImageGenerator {
             ...job.spec,
             prompt: `${job.spec.prompt}\n\nVISUAL REVIEW RETRY:\nThe retry must still execute this exact plan:\n${job.spec.auditSummary || "Use the current frame mission above."}\nChange the composition, product state, camera or action as needed to directly prove the selling point. Do not repeat the rejected scene. Review notes: ${item.reasons.join("; ")}`
           };
-          // Keep the accepted original until the replacement has passed every check.
-          const retryCandidatePath = path.join(
-            rawDir,
-            `visual-review-${retrySpec.role}-${pad(retrySpec.index)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`
-          );
-          await fs.rm(retryCandidatePath, { force: true });
+          // aiEcho validates job.outputPath.part and atomically swaps it into
+          // job.outputPath, so the accepted original survives until the new
+          // candidate passes every check. Other providers retain the separate
+          // reviewed candidate plus an atomic copy into the formal path.
+          const retryCandidatePath = job.aiEchoLedger
+            ? job.outputPath
+            : path.join(
+              rawDir,
+              `visual-review-${retrySpec.role}-${pad(retrySpec.index)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`
+            );
+          if (!job.aiEchoLedger) await fs.rm(retryCandidatePath, { force: true });
           const generation = await this.generateValidatedNativeAsset({
             spec: retrySpec,
             outputPath: retryCandidatePath,
             productImages,
             task,
             invalidDir: path.join(rawDir, "invalid-native"),
-            attemptNumber: 200 + item.index
+            attemptNumber: 200 + item.index,
+            aiEchoLedger: job.aiEchoLedger,
+            forceNewSubmission: Boolean(job.aiEchoLedger)
           });
           if (!generation.quality.passed) throw new Error(generation.quality.warnings.join("; "));
-          await fs.copyFile(retryCandidatePath, job.outputPath);
-          await fs.rm(retryCandidatePath, { force: true });
+          if (!job.aiEchoLedger) {
+            await copyFileWithAtomicReplace(retryCandidatePath, job.outputPath);
+            await fs.rm(retryCandidatePath, { force: true });
+          }
           return { job, retrySpec, generation };
         },
         async (item, result) => {
@@ -836,7 +922,7 @@ export class OpenAiImageGenerator implements ImageGenerator {
       : undefined;
     const isEnglishMarketplace = productContext(task).isEnglishMarketplace;
     const mainPreviewPath = mainImages.length
-      ? await composeContactSheet(mainImages, path.join(outputDir, "5张主图总览.jpg"), {
+      ? await composeContactSheet(mainImages, path.join(outputDir, overviewFilename("main", task.mainImageCount)), {
         columns: 2,
         cellWidth: 720,
         background: "#f4f0ea",
@@ -844,7 +930,7 @@ export class OpenAiImageGenerator implements ImageGenerator {
       })
       : undefined;
     const detailPreviewPath = detailImages.length
-      ? await composeContactSheet(detailImages, path.join(outputDir, "8张详情页总览.jpg"), {
+      ? await composeContactSheet(detailImages, path.join(outputDir, overviewFilename("detail", detailImageCountForTask(task))), {
         columns: 2,
         cellWidth: 520,
         background: "#f4f0ea",
@@ -864,6 +950,8 @@ export class OpenAiImageGenerator implements ImageGenerator {
       startedAt: startedAt.toISOString(),
       completedAt: completedAt.toISOString(),
       durationMs: completedAt.getTime() - startedAt.getTime(),
+      imageResolution: imageResolutionManifest(imageResolution, imageAspectRatioProfile),
+      imageAspectRatio: imageAspectRatioManifest(imageAspectRatioProfile),
       generationRule: generationRuleManifest(task),
       platformRule: platformRuleManifest(task),
       languageRule: languageRuleManifest(task),
@@ -999,11 +1087,20 @@ export class OpenAiImageGenerator implements ImageGenerator {
     }
   }
 
-  private async reuseNativeAsset(spec: NativeImageSpec, outputPath: string): Promise<GeneratedAsset | null> {
+  private async reuseNativeAsset(spec: NativeImageSpec, outputPath: string, task: ProductTask): Promise<GeneratedAsset | null> {
+    const candidatePath = path.join(
+      path.dirname(outputPath),
+      `${path.basename(outputPath)}.${process.pid}.${randomUUID()}.reuse.part`
+    );
     try {
-      const normalized = await this.normalizeNativeAsset(spec, outputPath);
+      // Reuse validation may resize an otherwise acceptable legacy image. Do
+      // that work on a same-directory candidate so a Sharp/filesystem crash
+      // cannot truncate or partially rewrite the accepted formal image.
+      await fs.copyFile(outputPath, candidatePath);
+      const normalized = await this.normalizeNativeAsset(spec, candidatePath, task);
       const { quality, width, height } = normalized;
       if (!quality.passed) return null;
+      await syncAndReplaceValidatedFile(candidatePath, outputPath);
       const stat = await fs.stat(outputPath);
       return {
         role: spec.role,
@@ -1019,6 +1116,8 @@ export class OpenAiImageGenerator implements ImageGenerator {
       };
     } catch {
       return null;
+    } finally {
+      await fs.rm(candidatePath, { force: true }).catch(() => undefined);
     }
   }
 
@@ -1029,12 +1128,24 @@ export class OpenAiImageGenerator implements ImageGenerator {
     task: ProductTask;
     invalidDir: string;
     attemptNumber?: number;
+    aiEchoLedger?: AiEchoLedgerJobContext;
+    forceNewSubmission?: boolean;
   }): Promise<NativeGeneratedAssetResult> {
     // Retry ownership lives in mapAdaptiveNativeImageJobs. Keeping a second
     // validation loop here would multiply attempts (3 x 3) for one bad asset.
     const maxValidationAttempts = 1;
     let totalAttempts = 0;
     let lastError: unknown;
+    const imageResolution = imageResolutionProfileForTask(options.task, this.config.openai.aiEchoResolution);
+    const aiEchoLedger = this.config.openai.imageProvider === "aiecho" && !localImageTestMode()
+      ? options.aiEchoLedger ?? await createFallbackAiEchoLedgerContext(
+        options,
+        imageResolution.providerResolution
+      )
+      : undefined;
+    if (aiEchoLedger && options.forceNewSubmission === true) {
+      await prepareForcedAiEchoSubmission(aiEchoLedger);
+    }
 
     for (let validationAttempt = 1; validationAttempt <= maxValidationAttempts; validationAttempt += 1) {
       let providerAttemptsCounted = false;
@@ -1054,14 +1165,27 @@ export class OpenAiImageGenerator implements ImageGenerator {
               referenceImageUrls: options.task.referenceImageUrls,
               aspectRatio: options.spec.aspectRatio,
               outputPath: options.outputPath,
-              maxAttempts: 1
+              maxAttempts: 1,
+              resolution: imageResolution.providerResolution,
+              ledgerContext: aiEchoLedger
             });
 
         totalAttempts += Math.max(1, generation.attempts);
         providerAttemptsCounted = true;
-        const normalized = await this.normalizeNativeAsset(options.spec, options.outputPath);
+        const validationPath = aiEchoLedger ? `${options.outputPath}.part` : options.outputPath;
+        const normalized = await this.normalizeNativeAsset(options.spec, validationPath, options.task);
         if (!normalized.quality.passed) {
-          throw new Error(`generated image validation failed: ${normalized.quality.warnings.join("; ")}`);
+          throw new NativeImageQualityRejectedError(normalized.quality.warnings);
+        }
+        if (aiEchoLedger) {
+          // The provider download, Sharp normalization and quality gate all run
+          // against the same-directory candidate. Only a fully validated and
+          // fsynced candidate may atomically replace the formal image.
+          await syncAndReplaceValidatedFile(validationPath, options.outputPath);
+          await aiEchoLedger.ledger.markCompleted(
+            aiEchoLedger.identity.fingerprint,
+            "validated-candidate"
+          );
         }
 
         return {
@@ -1073,12 +1197,22 @@ export class OpenAiImageGenerator implements ImageGenerator {
         };
       } catch (error) {
         lastError = error;
+        if (aiEchoLedger && error instanceof NativeImageQualityRejectedError) {
+          // Only a typed rejection returned by the existing quality gate may
+          // authorize another paid attempt. Sharp, filesystem and local runtime
+          // failures keep the recoverable provider task id unchanged.
+          await aiEchoLedger.ledger.markFailed(
+            aiEchoLedger.identity.fingerprint,
+            error,
+            "quality-rejected"
+          );
+        }
         if (!providerAttemptsCounted) {
           totalAttempts += Math.max(1, attemptedCountFromError(error));
         }
-        if (isRetryableNativeValidationError(error)) {
+        if (error instanceof NativeImageQualityRejectedError) {
           await moveInvalidNativeAsset(
-            options.outputPath,
+            aiEchoLedger ? `${options.outputPath}.part` : options.outputPath,
             options.invalidDir,
             options.spec,
             options.attemptNumber ?? validationAttempt
@@ -1095,24 +1229,27 @@ export class OpenAiImageGenerator implements ImageGenerator {
     throw attachAttemptCount(lastError, Math.max(totalAttempts, maxValidationAttempts));
   }
 
-  private async normalizeNativeAsset(spec: NativeImageSpec, outputPath: string): Promise<{
+  private async normalizeNativeAsset(spec: NativeImageSpec, outputPath: string, task: ProductTask): Promise<{
     width: number;
     height: number;
     quality: ImageQualityResult;
   }> {
-    const expectedWidth = nativeResolutionPixels(this.config.openai.aiEchoResolution);
-    const expectedHeight = spec.role === "main" ? expectedWidth : nativeDetailHeight(this.config.openai.aiEchoResolution);
-    const minBytes = spec.role === "main" ? 200_000 : 250_000;
+    const imageResolution = imageResolutionProfileForTask(task, this.config.openai.aiEchoResolution);
+    const dimensions = imageDimensionsForRole(imageResolution, spec.role, spec.aspectRatio);
+    const expectedWidth = dimensions.width;
+    const expectedHeight = dimensions.height;
+    const minBytes = nativeMinimumBytes(spec.role, expectedWidth, expectedHeight);
     const metadata = await sharp(outputPath).metadata();
     const actualWidth = metadata.width ?? 0;
     const actualHeight = metadata.height ?? 0;
     const expectedRatio = expectedWidth / expectedHeight;
     const actualRatio = actualWidth && actualHeight ? actualWidth / actualHeight : 0;
+    const openAiRatioTolerance = spec.aspectRatio === "3:4" ? 0.1 : spec.role === "main" ? 0.03 : 0.16;
     const canStandardizeOpenAiImage =
       this.config.openai.imageProvider === "openai" &&
       actualWidth >= 512 &&
       actualHeight >= 512 &&
-      Math.abs(expectedRatio - actualRatio) < (spec.role === "main" ? 0.03 : 0.16);
+      Math.abs(expectedRatio - actualRatio) < openAiRatioTolerance;
     const canStandardizeSameRatioImage = Math.abs(expectedRatio - actualRatio) < 0.012;
     if (
       actualWidth &&
@@ -1143,8 +1280,8 @@ export class OpenAiImageGenerator implements ImageGenerator {
     productImages: LocalProductImage[];
     task: ProductTask;
   }): Promise<AiEchoGenerationResult> {
-    const width = nativeResolutionPixels(this.config.openai.aiEchoResolution);
-    const height = options.spec.role === "main" ? width : nativeDetailHeight(this.config.openai.aiEchoResolution);
+    const imageResolution = imageResolutionProfileForTask(options.task, this.config.openai.aiEchoResolution);
+    const { width, height } = imageDimensionsForRole(imageResolution, options.spec.role, options.spec.aspectRatio);
     const productPath = options.productImages[0]?.path;
     const productWidth = Math.round(width * (options.spec.role === "main" ? 0.58 : 0.72));
     const productHeight = Math.round(height * (options.spec.role === "main" ? 0.62 : 0.50));
@@ -1191,7 +1328,7 @@ export class OpenAiImageGenerator implements ImageGenerator {
     mainImages: GeneratedAsset[],
     failures: AssetFailure[]
   ): Promise<GeneratedAsset[]> {
-    const modules = buildDetailSpecs(task, brand);
+    const modules = buildDetailSpecs(task, brand).slice(0, detailImageCountForTask(task));
     const assets: GeneratedAsset[] = [];
     for (const module of modules) {
       const backgroundPath = mainImages[(module.index - 1) % mainImages.length]?.path ?? productPath;
@@ -1392,7 +1529,12 @@ export class OpenAiImageGenerator implements ImageGenerator {
     outputPath: string;
     aspectRatio?: "1:1" | "3:4" | "9:16";
     maxAttempts?: number;
+    resolution?: ProviderImageResolution;
+    ledgerContext?: AiEchoLedgerJobContext;
   }): Promise<AiEchoGenerationResult> {
+    if (options.ledgerContext) {
+      return this.generateWithAiEchoLedger(options, options.ledgerContext);
+    }
     const maxAttempts = Math.max(1, Math.min(3, options.maxAttempts ?? 3));
     let lastError: unknown;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -1400,7 +1542,8 @@ export class OpenAiImageGenerator implements ImageGenerator {
         const submission = await this.submitAiEchoImage({
           prompt: options.prompt,
           referenceImageUrls: options.referenceImageUrls,
-          aspectRatio: options.aspectRatio
+          aspectRatio: options.aspectRatio,
+          resolution: options.resolution ?? this.config.openai.aiEchoResolution,
         });
         await this.waitForAiEchoResult(submission.taskId, options.outputPath);
         return { ...submission, attempts: attempt };
@@ -1416,22 +1559,96 @@ export class OpenAiImageGenerator implements ImageGenerator {
     throw attachAttemptCount(lastError, maxAttempts);
   }
 
+  private async generateWithAiEchoLedger(
+    options: {
+      prompt: string;
+      referenceImageUrls: string[];
+      outputPath: string;
+      aspectRatio?: "1:1" | "3:4" | "9:16";
+    },
+    context: AiEchoLedgerJobContext
+  ): Promise<AiEchoGenerationResult> {
+    const { ledger, identity } = context;
+    let entry = await ledger.get(identity.fingerprint);
+    if (!entry) throw new Error(`aiEcho 任务账本缺少当前单图记录：${identity.fingerprint.slice(0, 12)}`);
+    if (entry.status === "ambiguous") throw new AiEchoTaskAmbiguousError(identity.fingerprint);
+
+    const resumableStatuses = new Set(["submitted", "polling", "downloading", "validating", "retry_waiting", "completed"]);
+    const shouldStartNewAttempt = ["planned", "failed"].includes(entry.status);
+    if (shouldStartNewAttempt) {
+      // A provider-declared failure or a completed download that failed local
+      // validation is the explicit boundary where a new paid attempt is
+      // allowed. beginSubmission clears the old task id before the next POST.
+      await ledger.beginSubmission(identity.fingerprint);
+      let submission: AiEchoSubmission;
+      try {
+        submission = await this.submitAiEchoImage({
+          prompt: options.prompt,
+          referenceImageUrls: options.referenceImageUrls,
+          aspectRatio: options.aspectRatio,
+          resolution: identity.resolution,
+        });
+      } catch (error) {
+        // Once the POST starts, a transport failure or a response without an id
+        // cannot prove that the provider rejected the request. Never auto-post
+        // again without a recoverable local_task_id.
+        await ledger.markAmbiguous(identity.fingerprint, error);
+        throw new AiEchoTaskAmbiguousError(identity.fingerprint);
+      }
+      try {
+        entry = await ledger.markSubmitted(identity.fingerprint, submission.taskId, submission.submittedAt);
+      } catch (error) {
+        // The backup is committed before the primary ledger. If the primary
+        // rename fails after the backup succeeds, reload the newest valid copy
+        // and keep polling the known provider task. Never clear a known id by
+        // converting this state to ambiguous.
+        const recovered = await ledger.get(identity.fingerprint).catch(() => undefined);
+        if (recovered?.localTaskId === submission.taskId && resumableStatuses.has(recovered.status)) {
+          entry = recovered;
+        } else {
+          throw new Error(
+            `aiEcho 任务号已返回，但账本未能确认安全落盘，已停止后续操作且不会自动重提：${identity.fingerprint.slice(0, 12)}`,
+            { cause: error }
+          );
+        }
+      }
+    }
+
+    if (!entry.localTaskId || !resumableStatuses.has(entry.status)) {
+      if (entry.status === "submitting" && !entry.localTaskId) {
+        await ledger.markAmbiguous(identity.fingerprint, "提交状态存在，但没有可恢复的供应商任务号。");
+        throw new AiEchoTaskAmbiguousError(identity.fingerprint);
+      }
+      throw new Error(`aiEcho 任务状态不允许自动提交或恢复：${entry.status}`);
+    }
+    await ledger.markStatus(identity.fingerprint, "polling");
+    await this.waitForAiEchoResult(entry.localTaskId, options.outputPath, context);
+    const current = await ledger.get(identity.fingerprint);
+    return {
+      taskId: entry.localTaskId,
+      submittedAt: entry.submittedAt || new Date().toISOString(),
+      attempts: Math.max(1, current?.attempts ?? entry.attempts)
+    };
+  }
+
   private async submitAiEchoImage(options: {
     prompt: string;
     referenceImageUrls: string[];
     aspectRatio?: "1:1" | "3:4" | "9:16";
+    resolution?: ProviderImageResolution;
   }): Promise<AiEchoSubmission> {
     const referenceUrls = options.referenceImageUrls;
+    const resolution = options.resolution ?? this.config.openai.aiEchoResolution;
     const submittedAt = new Date().toISOString();
     const submit = await postAiEcho(this.config.openai.aiEchoBaseUrl, "/api/v1/ai/speed/image", {
       prompt: options.prompt,
       model: "gpt-2.0",
       aspectRatio: options.aspectRatio ?? "1:1",
-      imageSize: this.config.openai.aiEchoResolution.toUpperCase(),
-      resolution: this.config.openai.aiEchoResolution,
+      imageSize: resolution.toUpperCase(),
+      resolution,
       image_urls: referenceUrls.length ? [referenceUrls.join("\n")] : [],
       activationCode: this.config.openai.aiEchoActivationCode
-    });
+    }, { transportAttempts: 1 });
     const taskId = nestedString(submit, ["data", "local_task_id"]);
     if (!taskId) {
       throw new Error(`aiEcho 提交成功但未返回 local_task_id：${JSON.stringify(submit).slice(0, 500)}`);
@@ -1439,26 +1656,38 @@ export class OpenAiImageGenerator implements ImageGenerator {
     return { taskId, submittedAt };
   }
 
-  private async waitForAiEchoResult(taskId: string, outputPath: string): Promise<void> {
+  private async waitForAiEchoResult(taskId: string, outputPath: string, context?: AiEchoLedgerJobContext): Promise<void> {
     const deadline = Date.now() + aiEchoResultTimeoutMs();
+    await fs.rm(`${outputPath}.part`, { force: true });
     while (Date.now() < deadline) {
       await sleep(aiEchoPollIntervalMs());
       const result = await postAiEcho(this.config.openai.aiEchoBaseUrl, "/api/v1/ai/speed/image/result", {
         task_id: taskId
-      });
+      }, { transportAttempts: 3 });
       const status = nestedString(result, ["data", "status"]);
       if (status === "completed") {
         const imageUrl = nestedString(result, ["data", "image_url"]);
         if (!imageUrl) throw new Error("aiEcho 任务已完成但没有返回 image_url。");
+        if (context) await context.ledger.markStatus(context.identity.fingerprint, "downloading");
         const response = await fetchWithTimeout(imageUrl, {}, 90_000);
         if (!response.ok) throw new Error(`aiEcho 成品下载失败：HTTP ${response.status}`);
-        await fs.writeFile(outputPath, Buffer.from(await response.arrayBuffer()));
+        const candidatePath = `${outputPath}.part`;
+        await writeAiEchoDownloadCandidate(response, candidatePath);
+        if (context) {
+          await context.ledger.markStatus(context.identity.fingerprint, "validating");
+        } else {
+          // The legacy composition path has no post-download native quality
+          // gate, but it still must not expose a partially downloaded file.
+          await syncAndReplaceValidatedFile(candidatePath, outputPath);
+        }
         return;
       }
       if (status === "failed") {
         const message = nestedString(result, ["data", "error_msg"]) || "未知错误";
         const returned = nestedValue(result, ["data", "is_return"]) === 1 ? "，积分已退回" : "";
-        throw new Error(`aiEcho 生图失败：${message}${returned}`);
+        const error = new Error(`aiEcho 生图失败：${message}${returned}`);
+        if (context) await context.ledger.markFailed(context.identity.fingerprint, error, "provider-terminal");
+        throw error;
       }
       if (status && !["pending", "processing"].includes(status)) {
         throw new Error(`aiEcho 返回未知状态：${status}`);
@@ -1468,11 +1697,16 @@ export class OpenAiImageGenerator implements ImageGenerator {
   }
 }
 
-async function postAiEcho(baseUrl: string, endpoint: string, body: Record<string, unknown>): Promise<unknown> {
+async function postAiEcho(
+  baseUrl: string,
+  endpoint: string,
+  body: Record<string, unknown>,
+  options: { transportAttempts?: number } = {}
+): Promise<unknown> {
   const url = `${baseUrl}${endpoint}`;
   let response: Response;
   try {
-    response = await retryFetch(3, url, {
+    response = await retryFetch(Math.max(1, options.transportAttempts ?? 3), url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
@@ -1490,9 +1724,225 @@ async function postAiEcho(baseUrl: string, endpoint: string, body: Record<string
   const code = nestedValue(data, ["code"]);
   if (!response.ok || (typeof code === "number" && code !== 200)) {
     const message = nestedString(data, ["msg"]) || text.slice(0, 500);
-    throw new Error(`aiEcho API 错误：${message}`);
+    throw new Error(`aiEcho API 错误：HTTP ${response.status} ${message}`);
   }
   return data;
+}
+
+async function writeAiEchoDownloadCandidate(response: Response, candidatePath: string): Promise<void> {
+  await ensureDir(path.dirname(candidatePath));
+  let handle: fs.FileHandle | undefined;
+  try {
+    handle = await fs.open(candidatePath, "w");
+    if (response.body) {
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          if (chunk.value?.byteLength) await writeAllBytes(handle, chunk.value);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    } else {
+      await handle.writeFile(Buffer.from(await response.arrayBuffer()));
+    }
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+  } finally {
+    // A stream interruption intentionally leaves the partial candidate for
+    // diagnosis. The next resume removes it before redownloading the same task.
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function writeAllBytes(handle: fs.FileHandle, bytes: Uint8Array): Promise<void> {
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    const result = await handle.write(bytes, offset, bytes.byteLength - offset, null);
+    if (result.bytesWritten <= 0) throw new Error("aiEcho 下载候选文件写入中断。");
+    offset += result.bytesWritten;
+  }
+}
+
+async function syncAndReplaceValidatedFile(candidatePath: string, outputPath: string): Promise<void> {
+  await ensureDir(path.dirname(outputPath));
+  let handle: fs.FileHandle | undefined;
+  try {
+    handle = await fs.open(candidatePath, "r+");
+    await handle.sync();
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+  await fs.rename(candidatePath, outputPath);
+  await syncOutputDirectory(path.dirname(outputPath));
+}
+
+async function copyFileWithAtomicReplace(sourcePath: string, outputPath: string): Promise<void> {
+  const directory = path.dirname(outputPath);
+  await ensureDir(directory);
+  const temporaryPath = path.join(
+    directory,
+    `${path.basename(outputPath)}.${process.pid}.${randomUUID()}.replace.tmp`
+  );
+  let handle: fs.FileHandle | undefined;
+  try {
+    await fs.copyFile(sourcePath, temporaryPath);
+    handle = await fs.open(temporaryPath, "r+");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await fs.rename(temporaryPath, outputPath);
+    await syncOutputDirectory(directory);
+  } finally {
+    await handle?.close().catch(() => undefined);
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+}
+
+async function syncOutputDirectory(directory: string): Promise<void> {
+  let handle: fs.FileHandle | undefined;
+  try {
+    handle = await fs.open(directory, "r");
+    await handle.sync();
+  } catch {
+    // Directory fsync is unavailable on Windows. The file itself is still
+    // synced before the atomic rename.
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function createFallbackAiEchoLedgerContext(
+  options: {
+    spec: NativeImageSpec;
+    outputPath: string;
+    productImages: LocalProductImage[];
+    task: ProductTask;
+    invalidDir: string;
+  },
+  resolution: "1k" | "2k" | "4k"
+): Promise<AiEchoLedgerJobContext> {
+  const ledger = new AiEchoTaskLedger(path.join(path.dirname(options.invalidDir), AIECHO_TASK_LEDGER_FILENAME));
+  await ledger.recoverInterruptedSubmissions();
+  const referenceImageHashes = await Promise.all(options.productImages.map((image) => sha256File(image.path)));
+  const identity = aiEchoTaskIdentity(options.task, options.spec, referenceImageHashes, resolution);
+  await ledger.ensureEntries([identity]);
+  return {
+    ledger,
+    identity
+  };
+}
+
+async function prepareForcedAiEchoSubmission(context: AiEchoLedgerJobContext): Promise<void> {
+  const entry = await context.ledger.get(context.identity.fingerprint);
+  if (!entry) throw new Error(`aiEcho 任务账本缺少强制返工记录：${context.identity.fingerprint.slice(0, 12)}`);
+  if (entry.status === "ambiguous") throw new AiEchoTaskAmbiguousError(context.identity.fingerprint);
+  if (entry.localTaskId && ["submitted", "polling", "downloading", "validating", "retry_waiting"].includes(entry.status)) {
+    // forceNewSubmission is deliberately idempotent across process restarts.
+    // Once the replacement has a known provider task id, every later call must
+    // recover that task instead of creating another paid submission.
+    return;
+  }
+  if (entry.status === "submitting") {
+    throw new Error("aiEcho 强制返工提交状态不确定，必须先完成账本恢复。");
+  }
+  if (entry.status === "completed") {
+    await context.ledger.markFailed(
+      context.identity.fingerprint,
+      "现有成品已被明确选中进行质量返工，允许创建下一次提交。",
+      "manual-replacement"
+    );
+  }
+}
+
+function aiEchoTaskIdentity(
+  task: ProductTask,
+  spec: NativeImageSpec,
+  referenceImageHashes: string[],
+  resolution: "1k" | "2k" | "4k"
+): AiEchoTaskIdentity {
+  const model = "gpt-2.0";
+  return {
+    fingerprint: createAiEchoTaskFingerprint({
+      stableProductInput: stableAiEchoProductInput(task),
+      referenceImageHashes,
+      role: spec.role,
+      index: spec.index,
+      aspectRatio: spec.aspectRatio,
+      model,
+      resolution
+    }),
+    role: spec.role,
+    index: spec.index,
+    aspectRatio: spec.aspectRatio,
+    model,
+    resolution
+  };
+}
+
+function stableAiEchoProductInput(task: ProductTask): Record<string, unknown> {
+  // Deliberately exclude local paths, submission timestamps, task ids and all
+  // temporary public URLs. Reference file contents are represented separately
+  // by their SHA-256 values.
+  return {
+    sku: task.sku,
+    brandId: task.brandId,
+    productName: task.productName,
+    originalProductName: task.originalProductName,
+    visibleProductName: task.visibleProductName,
+    targetAudience: task.targetAudience,
+    targetPlatform: task.targetPlatform,
+    outputLanguage: task.outputLanguage,
+    imageResolutionId: task.imageResolutionId,
+    category: task.category,
+    sellingPoints: task.sellingPoints,
+    specs: task.specs,
+    bannedElements: task.bannedElements,
+    referenceKeywords: task.referenceKeywords,
+    notes: task.notes,
+    suiteRatio: task.suiteRatio,
+    briefFocus: task.briefFocus,
+    commonRule: {
+      profile: task.commonRuleProfile,
+      name: task.commonRuleName,
+      version: task.commonRuleVersion,
+      reason: task.commonRuleReason,
+      text: task.commonRuleText,
+      matchedKeywords: task.commonRuleMatchedKeywords
+    },
+    platformRule: {
+      profile: task.platformRuleProfile,
+      name: task.platformRuleName,
+      version: task.platformRuleVersion,
+      reason: task.platformRuleReason,
+      text: task.platformRuleText,
+      matchedKeywords: task.platformRuleMatchedKeywords
+    },
+    languageRule: {
+      profile: task.languageRuleProfile,
+      name: task.languageRuleName,
+      version: task.languageRuleVersion,
+      reason: task.languageRuleReason,
+      text: task.languageRuleText,
+      matchedKeywords: task.languageRuleMatchedKeywords
+    },
+    generationRule: {
+      profile: task.generationRuleProfile,
+      name: task.generationRuleName,
+      version: task.generationRuleVersion,
+      reason: task.generationRuleReason,
+      text: task.generationRuleText,
+      matchedKeywords: task.generationRuleMatchedKeywords
+    },
+    mainImageCount: task.mainImageCount,
+    generateDetail: task.generateDetail,
+    generationProfileId: task.generationProfileId,
+    detailImageCount: task.detailImageCount,
+    imageRatio: task.imageRatio
+  };
 }
 
 function localImageTestMode(): boolean {
@@ -1921,9 +2371,11 @@ function openAiImageSize(aspectRatio?: "1:1" | "3:4" | "9:16"): string {
 }
 
 function buildOpenAiResponsesImagePrompt(prompt: string, aspectRatio?: "1:1" | "3:4" | "9:16"): string {
-  const ratioInstruction = aspectRatio === "3:4" || aspectRatio === "9:16"
-    ? "Output a vertical ecommerce image in 1024x1536 / 9:16 style."
-    : "Output a square ecommerce image in 1024x1024 / 1:1 style.";
+  const ratioInstruction = aspectRatio === "3:4"
+    ? "Compose the final ecommerce image for a 3:4 portrait canvas. Use the available 1024x1536 portrait render while keeping all important content inside a centered 3:4 safe area for final normalization."
+    : aspectRatio === "9:16"
+      ? "Output a vertical ecommerce image in 1024x1536, composed for the final 9:16 canvas."
+      : "Output a square ecommerce image in 1024x1024 / 1:1 style.";
   return [
     "You are generating an ecommerce product image with the OpenAI Responses image_generation tool.",
     ratioInstruction,
@@ -2115,9 +2567,14 @@ function openAiImageRetryDelayMs(error: unknown, attempt: number): number {
 }
 
 function isRetryableOpenAiImageError(error: unknown): boolean {
+  // A gateway can be reachable while having no upstream account allocated for
+  // this image model. Retrying this explicit capacity condition only repeats
+  // the same rejected request; it cannot recover until the provider changes
+  // its account pool.
+  const message = errorMessage(error);
+  if (/no\s+available\s+compatible\s+accounts?/i.test(message)) return false;
   const status = error && typeof error === "object" ? (error as { status?: unknown }).status : undefined;
   if (typeof status === "number" && [408, 409, 425, 429, 500, 502, 503, 504].includes(status)) return true;
-  const message = errorMessage(error);
   return /429|rate\s*limit|concurrency\s*limit|retry\s+later|too\s+many\s+requests|timed?\s*out|timeout|temporarily|temporary|overloaded|terminated|upstream\s+request\s+failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|AbortError|HTTP\s+50[234]/i.test(message);
 }
 
@@ -2159,7 +2616,9 @@ function errorMessage(error: unknown): string {
 }
 
 function isRetryableNativeValidationError(error: unknown): boolean {
-  return /dimension|ratio|expected|validation|2048x|1024x|1536|3642|尺寸|比例|不符合/i.test(errorMessage(error));
+  // Keep word boundaries around ratio so ordinary filesystem errors such as
+  // "operation not permitted" are not mistaken for image-ratio failures.
+  return /dimensions?|\bratio\b|expected|validation|2048x|1024x|1536|3642|尺寸|比例|不符合/i.test(errorMessage(error));
 }
 
 function nativeImageJobLabel(spec: NativeImageSpec): string {
@@ -2595,7 +3054,9 @@ function storyboardInput(task: ProductTask, points: string[]) {
     isAiRobot: productContext(task).isAiRobot,
     productKind: identity.id,
     isEnglishMarketplace: productContext(task).isEnglishMarketplace,
-    generateDetail: task.generateDetail
+    generateDetail: task.generateDetail,
+    mainImageCount: task.mainImageCount,
+    detailImageCount: detailImageCountForTask(task)
   };
 }
 
@@ -5765,14 +6226,16 @@ function buildTypographySystemRule(context: ProductContext): string {
   return rules.join("\n");
 }
 
-function buildTypographyCompositionRule(copy: string[], role: string, aspectRatio: "1:1" | "9:16"): string {
+function buildTypographyCompositionRule(copy: string[], role: string, aspectRatio: "1:1" | "3:4" | "9:16"): string {
   const cleanCopy = copy.map((line) => line.trim()).filter(Boolean);
   const [headline, subline, support] = cleanCopy;
   const extras = cleanCopy.slice(3);
   const isDetail = aspectRatio === "9:16";
   const canvasRule = isDetail
     ? "9:16 详情页采用竖向阅读节奏：上方或中上方建立标题组，中段给画面证据，下段留呼吸感；不要把文字堆在整屏中心。"
-    : "1:1 主图采用货架秒读节奏：商品先大，文字组占一个清楚角落或边侧留白，不能抢走商品第一主体。";
+    : aspectRatio === "3:4"
+      ? "3:4 竖版主图采用纵向货架节奏：商品保持第一主体，上下建立清楚层次，文字组放在稳定留白区，不能把商品压缩成小图。"
+      : "1:1 主图采用货架秒读节奏：商品先大，文字组占一个清楚角落或边侧留白，不能抢走商品第一主体。";
   const roleRule = typographyRoleRule(role, isDetail);
   return [
     "高级文字版式总控：把指定文案设计成一个完整品牌信息组，而不是把几行字直接叠在照片上。",
@@ -7984,6 +8447,22 @@ function buildSkincareMainSpecs(
   }));
 }
 
+function applyTaskAspectRatio(spec: NativeImageSpec, profile: ImageAspectRatioProfile): NativeImageSpec {
+  const aspectRatio = aspectRatioForRole(profile, spec.role);
+  const prompt = spec.prompt
+    .replace(/画布：(1:1|3:4|9:16)/g, `画布：${aspectRatio}`)
+    .replace(/Canvas: (1:1|3:4|9:16)/g, `Canvas: ${aspectRatio}`)
+    .replace(/(1:1|3:4|9:16) 主图采用/g, `${aspectRatio} 主图采用`);
+  return {
+    ...spec,
+    aspectRatio,
+    prompt: [
+      `任务画布比例（最高优先级）：${aspectRatio}；必须按该比例完成构图和最终成品。`,
+      prompt,
+    ].join("\n"),
+  };
+}
+
 function buildNativeImageSpecs(
   task: ProductTask,
   brand: BrandProfile,
@@ -8056,9 +8535,11 @@ function buildNativeImageSpecs(
         : context.isSkincare
           ? buildSkincareDetailSpecs(task, visualSystem, points, specs)
     : buildGenericDetailSpecs(task, brand, visualSystem, points, specs);
+  const imageAspectRatioProfile = imageAspectRatioProfileForTask(task);
+  const ratioSafeSpecs = [...main, ...detail].map((spec) => applyTaskAspectRatio(spec, imageAspectRatioProfile));
   const languageSafeSpecs = context.isEnglishMarketplace
-    ? applyEnglishVisibleCopyContract(task, [...main, ...detail], points, specs)
-    : [...main, ...detail];
+    ? applyEnglishVisibleCopyContract(task, ratioSafeSpecs, points, specs)
+    : ratioSafeSpecs;
   const fallbackInsight = productVisualInsight ?? buildPromptLayerProductVisualInsight(task, [], analysis);
   const activeCreativePlan = creativePlan ?? buildDeterministicCreativePlan(
     task,
@@ -8101,7 +8582,7 @@ function applyEnglishVisibleCopyContract(
       .split(/\r?\n/)
       .filter((line) => !/营销文案只允许出现以下指定文字|文字层级：第[123]句|其余指定文字/.test(line))
       .join("\n");
-    const aspectRatio = spec.role === "main" ? "1:1" : "9:16";
+    const aspectRatio = spec.aspectRatio;
     return {
       ...spec,
       copy: safeCopy,
@@ -9131,15 +9612,35 @@ function pad(value: number): string {
   return String(value).padStart(2, "0");
 }
 
-function nativeResolutionPixels(resolution: "1k" | "2k" | "4k"): number {
-  if (resolution === "1k") return 1024;
-  if (resolution === "4k") return 4096;
-  return 2048;
+function nativeMinimumBytes(role: "main" | "detail", width: number, height: number): number {
+  const baselineBytes = role === "main" ? 200_000 : 250_000;
+  const baselinePixels = role === "main" ? 2048 * 2048 : 2048 * 3642;
+  const floor = role === "main" ? 50_000 : 70_000;
+  return Math.max(floor, Math.round(baselineBytes * Math.sqrt((width * height) / baselinePixels)));
 }
 
-function nativeDetailHeight(resolution: "1k" | "2k" | "4k"): number {
-  const raw = Math.ceil(nativeResolutionPixels(resolution) * 16 / 9);
-  return raw % 2 === 0 ? raw : raw + 1;
+function imageResolutionManifest(profile: ImageResolutionProfile, aspectProfile: ImageAspectRatioProfile): NonNullable<GenerationManifest["imageResolution"]> {
+  const main = imageDimensionsForRole(profile, "main", aspectProfile.mainAspectRatio);
+  const detail = imageDimensionsForRole(profile, "detail", aspectProfile.detailAspectRatio);
+  return {
+    id: profile.id,
+    label: profile.label,
+    providerResolution: profile.providerResolution,
+    mainWidth: main.width,
+    mainHeight: main.height,
+    detailWidth: detail.width,
+    detailHeight: detail.height,
+  };
+}
+
+function imageAspectRatioManifest(profile: ImageAspectRatioProfile): NonNullable<GenerationManifest["imageAspectRatio"]> {
+  return {
+    id: profile.id,
+    label: profile.label,
+    summary: profile.summary,
+    mainAspectRatio: profile.mainAspectRatio,
+    detailAspectRatio: profile.detailAspectRatio,
+  };
 }
 
 async function clearNativeGeneratedOutputs(outputDir: string, mainDir: string, detailDir: string): Promise<void> {
@@ -9147,8 +9648,10 @@ async function clearNativeGeneratedOutputs(outputDir: string, mainDir: string, d
     clearImageFiles(mainDir),
     clearImageFiles(detailDir),
     ...[
-      "5张主图总览.jpg",
-      "8张详情页总览.jpg",
+      overviewFilename("main", 2),
+      overviewFilename("main", 5),
+      overviewFilename("detail", 3),
+      overviewFilename("detail", 8),
       "详情页完整长图.jpg",
       "prompts.json",
       "prompt-audit.json",
@@ -9197,7 +9700,8 @@ async function moveInvalidNativeAsset(
   }
 
   await ensureDir(invalidDir);
-  const ext = path.extname(outputPath) || ".png";
+  const originalCandidatePath = outputPath.endsWith(".part") ? outputPath.slice(0, -".part".length) : outputPath;
+  const ext = path.extname(originalCandidatePath) || ".png";
   const target = path.join(
     invalidDir,
     `${spec.role}-${pad(spec.index)}-${safeSegment(spec.title)}-attempt-${attempt}${ext}`
@@ -9270,7 +9774,7 @@ function buildDesignReviewReport(
     "审核详情页屏序是否完整。",
     "审核文字和合规禁用项。"
   ]);
-  const expectedDetail = task.generateDetail ? 8 : 0;
+  const expectedDetail = detailImageCountForTask(task);
   const items = assets.map((asset) => reviewAsset(asset, task, analysis, expectedDetail, sellingPointCoverage));
   for (const item of failures) {
     items.push({
@@ -9323,14 +9827,23 @@ function reviewAsset(
   const isMain = asset.role === "main";
   const context = productContext(task);
   const isEnglishMarketplace = context.isEnglishMarketplace;
-  const expectedWidth = isMain ? asset.width : asset.width;
-  const expectedHeight = isMain ? asset.width : Math.round(asset.width * 16 / 9);
+  const imageResolution = imageResolutionProfileForTask(task);
+  const imageAspectRatioProfile = imageAspectRatioProfileForTask(task);
+  const expectedRatio = aspectRatioForRole(imageAspectRatioProfile, asset.role);
+  const expectedDimensions = task.imageResolutionId
+    ? imageDimensionsForRole(imageResolution, asset.role, expectedRatio)
+    : {
+        width: asset.width,
+        height: expectedHeightForAspectRatio(asset.width, expectedRatio),
+      };
+  const expectedWidth = expectedDimensions.width;
+  const expectedHeight = expectedDimensions.height;
   const checks = [
     {
       id: "dimension",
-      label: isMain ? "主图方图尺寸正确" : "详情页 9:16 尺寸正确",
-      passed: isMain ? asset.width === asset.height : Math.abs(asset.height / asset.width - 16 / 9) < 0.012,
-      evidence: `实际 ${asset.width}x${asset.height}，期望约 ${expectedWidth}x${expectedHeight}`
+      label: `${isMain ? "主图" : "详情页"} ${expectedRatio} 尺寸正确`,
+      passed: asset.width === expectedWidth && asset.height === expectedHeight,
+      evidence: `实际 ${asset.width}x${asset.height}，期望 ${expectedWidth}x${expectedHeight}`
     },
     {
       id: "brand-system",
@@ -9467,6 +9980,12 @@ function reviewAsset(
     checks,
     notes
   };
+}
+
+function expectedHeightForAspectRatio(width: number, aspectRatio: "1:1" | "3:4" | "9:16"): number {
+  if (aspectRatio === "1:1") return width;
+  const rawHeight = Math.ceil(width * (aspectRatio === "3:4" ? 4 / 3 : 16 / 9));
+  return rawHeight % 2 === 0 ? rawHeight : rawHeight + 1;
 }
 
 function allowedMarketingCopyContainsTemplateTerm(prompt: string): boolean {
@@ -9709,7 +10228,7 @@ function buildReport(
     `SKU：${task.sku}`,
     `品牌：${brand.name}`,
     `主图：${mainImages.length}/${task.mainImageCount}`,
-    `详情模块：${detailImages.length}/${task.generateDetail ? 8 : 0}`,
+    `详情模块：${detailImages.length}/${detailImageCountForTask(task)}`,
     longDetailPath ? `详情长图：${longDetailPath}` : "",
     designReviewPath ? `设计审核：${designReviewPath}` : "",
     coverageSummary,

@@ -73,6 +73,28 @@ test("allows a complete robot storyboard with product-specific evidence", () => 
   assert.deepEqual(result.missingEvidence, []);
 });
 
+test("uses every selected compact profile instead of expecting eight detail screens", () => {
+  for (const expected of [
+    { id: "compact-1-2", mainImageCount: 1, detailImageCount: 2 },
+    { id: "compact-2-3", mainImageCount: 2, detailImageCount: 3 },
+    { id: "compact-3-4", mainImageCount: 3, detailImageCount: 4 },
+  ]) {
+    const specs = robotSpecs().filter((spec) => spec.role === "main"
+      ? spec.index <= expected.mainImageCount
+      : spec.index <= expected.detailImageCount);
+    const result = auditNativePromptSet({
+      ...baseTask,
+      mainImageCount: expected.mainImageCount,
+      generateDetail: true,
+      generationProfileId: expected.id,
+      detailImageCount: expected.detailImageCount,
+    }, specs);
+    assert.equal(result.expectedCount, expected.mainImageCount + expected.detailImageCount);
+    assert.equal(result.actualCount, expected.mainImageCount + expected.detailImageCount);
+    assert.equal(result.ok, true, result.errors.join("\n"));
+  }
+});
+
 test("rejects a main-image set that repeats one scene signature", () => {
   const specs = robotSpecs();
   for (const spec of specs.slice(0, 3)) {
