@@ -50,7 +50,7 @@
 - 管理端双击 `启动若依管理后台.cmd`，普通用户双击 `启动用户端.cmd`；两者共用串行、可重复启动入口，分别打开根路径和 `/portal/`，同时双击也不会抢占端口。入口先复用健康服务，后端 JAR 过期时只刷新已核验的 Java 进程；否则启动 Docker 与已有 MySQL/Redis，配置或双容器缺失时调用安全恢复流程。残缺容器或旧库凭据不可读时停止，不猜测或重置数据。管理员密码可用 `复制若依管理员密码.cmd` 复制。
 - 若依初始化 SQL 必须通过 `docker cp` 以原始 UTF-8 字节导入容器，不能用 Windows PowerShell 文本管道连接 `mysql`。若旧库菜单文字已保存为问号，运行 `admin/scripts/repair-admin-encoding.ps1`；它会建立临时参考库，只回填匹配的损坏显示文字，不重置账户、密码、任务或素材。
 - `start-admin.ps1` 会检查五个服务端口、自动构建过期 JAR 并等待 HTTP 就绪，失败时清理本次进程。`refresh-admin-backend.ps1` 只刷新进程记录中与当前 JAR 匹配的 Java，并在 8080 就绪后更新记录。
-- 三个若依双击启动器固定调用 Windows 自带的 `powershell.exe`，并仅为当前启动进程使用 `-ExecutionPolicy Bypass`。它不修改系统或用户的全局执行策略，避免桌面账户没有 `pwsh.exe` 或本地脚本策略阻断启动。
+- 双击启动器固定调用 Windows PowerShell 5.1，执行策略仅对本次生效。凭据校验区分缺失、不可读、字段错误，端口兼容数字/字符串。启动自动保存 `.local-web/ruoyi/logs/launcher-*.json`，记录账户、路径、状态与错误位置，不保存秘密或异常原文。
 - 若 Docker 容器与 DPAPI 文件因换 Windows 账户或基础设施丢失而无法同时启动，可从创建 Docker 引擎的同一 Windows 账户运行 `修复若依本机环境.cmd`。它只会在两个容器均不存在时创建新的本机 MySQL 与 Redis；只剩一个容器或旧容器凭据不可读时安全停止。被替换的不可读 DPAPI 文件会改名备份，脚本不删除客户素材、历史任务或既有容器。
 
 ## 若依权限与作图合同

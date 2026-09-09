@@ -9,6 +9,40 @@ param(
 $ErrorActionPreference = 'Stop'
 $portalUri = 'http://127.0.0.1:8001/portal/'
 . (Join-Path $PSScriptRoot 'backend-artifact.ps1')
+. (Join-Path $PSScriptRoot 'credential-status.ps1')
+$launcherRunId = [Guid]::NewGuid().ToString('N')
+$launcherReportPath = Join-Path $PSScriptRoot ("..\..\.local-web\ruoyi\logs\launcher-$launcherRunId.json")
+
+function Write-LauncherReport {
+    param([string]$Result, $Failure = $null)
+    try {
+        $states = @(
+            (Get-BgeCredentialStatus -Path $InfrastructureCredentialPath -Kind Infrastructure),
+            (Get-BgeCredentialStatus -Path $AdminSecretPath -Kind Admin)
+        )
+        $report = [ordered]@{
+            time = (Get-Date).ToUniversalTime().ToString('o')
+            result = $Result
+            entryUri = $EntryUri
+            repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+            account = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+            accountSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
+            localAppData = [Environment]::GetFolderPath('LocalApplicationData')
+            powershellVersion = [string]$PSVersionTable.PSVersion
+            credentials = @($states | Select-Object Path, Status, InvalidFields, ProbeError)
+        }
+        if ($null -ne $Failure) {
+            # Do not persist exception messages: native tools can include secrets.
+            $report.errorType = $Failure.Exception.GetType().FullName
+            $report.script = $Failure.InvocationInfo.ScriptName
+            $report.line = $Failure.InvocationInfo.ScriptLineNumber
+        }
+        New-Item -ItemType Directory -Path (Split-Path -Parent $launcherReportPath) -Force | Out-Null
+        $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $launcherReportPath -Encoding UTF8
+    }
+    catch { Write-Warning 'The launcher diagnostic report could not be saved.' }
+}
 
 function Import-PortalEnvironment {
     . (Join-Path $PSScriptRoot 'import-admin-environment.ps1') `
@@ -187,6 +221,8 @@ try {
         throw 'Another launcher is still starting the local services. Please retry in a moment.'
     }
 
+    Write-LauncherReport -Result 'starting'
+
     $environmentReady = $false
     if (Test-PortalConfiguration) {
         try {
@@ -195,6 +231,10 @@ try {
         }
         catch {
             Write-Warning 'The saved local configuration could not be loaded. Safe recovery will inspect it.'
+            foreach ($state in @(
+                (Get-BgeCredentialStatus -Path $InfrastructureCredentialPath -Kind Infrastructure),
+                (Get-BgeCredentialStatus -Path $AdminSecretPath -Kind Admin)
+            )) { Write-Host (Format-BgeCredentialStatus $state) }
         }
     }
 
@@ -252,7 +292,13 @@ try {
     }
 
     Start-Process -FilePath $EntryUri
+    Write-LauncherReport -Result 'ready'
     Write-Host "Page opened: $EntryUri"
+}
+catch {
+    Write-LauncherReport -Result 'failed' -Failure $_
+    Write-Host "Startup diagnostic: $([IO.Path]::GetFullPath($launcherReportPath))"
+    throw
 }
 finally {
     if ($hasStartupMutex) {

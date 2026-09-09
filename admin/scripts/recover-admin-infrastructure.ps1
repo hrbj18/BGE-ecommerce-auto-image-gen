@@ -7,6 +7,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'credential-status.ps1')
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\\..')).Path
 
 function New-RandomSecret {
@@ -36,43 +37,6 @@ function ConvertTo-PlainSecret {
         }
     }
     return [string]$Value
-}
-
-function Get-ReadableClixml {
-    param([string]$Path)
-
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return [pscustomobject]@{ Exists = $false; Readable = $false; Value = $null }
-    }
-    try {
-        return [pscustomobject]@{ Exists = $true; Readable = $true; Value = (Import-Clixml -LiteralPath $Path) }
-    }
-    catch {
-        return [pscustomobject]@{ Exists = $true; Readable = $false; Value = $null }
-    }
-}
-
-function Test-InfrastructureCredential {
-    param($Value)
-
-    return $null -ne $Value -and
-        $Value.MySqlHost -is [string] -and
-        $Value.MySqlPort -is [string] -and
-        $Value.MySqlDatabase -is [string] -and
-        $Value.MySqlUser -is [string] -and
-        $Value.MySqlPassword -is [System.Security.SecureString] -and
-        $Value.RedisHost -is [string] -and
-        $Value.RedisPort -is [string] -and
-        $Value.RedisPassword -is [System.Security.SecureString]
-}
-
-function Test-AdminSecret {
-    param($Value)
-
-    return $null -ne $Value -and
-        $Value.RuoYiTokenSecret -is [System.Security.SecureString] -and
-        $Value.LocalWebAccessToken -is [System.Security.SecureString] -and
-        $Value.RuoYiAdminPassword -is [System.Security.SecureString]
 }
 
 function Test-ContainerExists {
@@ -150,10 +114,10 @@ if ($LASTEXITCODE -ne 0) {
     throw '当前 Windows 账户无法访问 Docker 引擎。请先在 Docker Desktop 中确认 Engine running，再从同一账户运行本脚本。'
 }
 
-$infraRead = Get-ReadableClixml -Path $InfrastructureCredentialPath
-$secretRead = Get-ReadableClixml -Path $AdminSecretPath
-$validInfrastructure = $infraRead.Readable -and (Test-InfrastructureCredential -Value $infraRead.Value)
-$validAdminSecret = $secretRead.Readable -and (Test-AdminSecret -Value $secretRead.Value)
+$infraRead = Get-BgeCredentialStatus -Path $InfrastructureCredentialPath -Kind Infrastructure
+$secretRead = Get-BgeCredentialStatus -Path $AdminSecretPath -Kind Admin
+$validInfrastructure = $infraRead.Status -eq 'ready'
+$validAdminSecret = $secretRead.Status -eq 'ready'
 $mysqlExists = Test-ContainerExists -Name $MySqlContainerName
 $redisExists = Test-ContainerExists -Name $RedisContainerName
 
@@ -161,7 +125,7 @@ if ($mysqlExists -xor $redisExists) {
     throw '只发现一个若依基础设施容器。为保护已有数据，脚本不会补建或删除另一个容器。请先人工确认容器状态。'
 }
 if ($mysqlExists -and -not $validInfrastructure) {
-    throw '发现已有 MySQL 和 Redis 容器，但基础设施凭据无法读取。脚本不会猜测或重置已有数据库密码。请在创建原凭据的 Windows 账户运行，或另行确认数据迁移方案。'
+    throw ('BGE_EXISTING_DATABASE_CREDENTIAL_INVALID: ' + (Format-BgeCredentialStatus $infraRead) + '. Existing containers and passwords are preserved. Restore the original credential file; unreadable files require the original Windows user/machine or an intact backup.')
 }
 
 $credentialRoot = Split-Path -Parent $InfrastructureCredentialPath

@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'credential-status.ps1')
 
 function ConvertTo-PlainSecret {
     param([Parameter(Mandatory = $true)]$Value)
@@ -21,15 +22,16 @@ function ConvertTo-PlainSecret {
     return [string]$Value
 }
 
-if (-not (Test-Path -LiteralPath $InfrastructureCredentialPath)) {
-    throw "基础设施凭据不存在，请先完成 MySQL 和 Redis 配置。路径为 $InfrastructureCredentialPath"
-}
-if (-not (Test-Path -LiteralPath $AdminSecretPath)) {
-    throw "若依本机密钥不存在，请先运行 admin/scripts/initialize-admin-secrets.ps1。路径为 $AdminSecretPath"
+$infrastructureState = Get-BgeCredentialStatus -Path $InfrastructureCredentialPath -Kind Infrastructure
+$adminSecretState = Get-BgeCredentialStatus -Path $AdminSecretPath -Kind Admin
+foreach ($check in @($infrastructureState, $adminSecretState)) {
+    if ($check.Status -ne 'ready') {
+        throw ('BGE_CREDENTIAL_INVALID: ' + (Format-BgeCredentialStatus $check))
+    }
 }
 
-$infrastructure = Import-Clixml -LiteralPath $InfrastructureCredentialPath
-$adminSecrets = Import-Clixml -LiteralPath $AdminSecretPath
+$infrastructure = $infrastructureState.Value
+$adminSecrets = $adminSecretState.Value
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 
 $dbHost = [string]$infrastructure.MySqlHost
