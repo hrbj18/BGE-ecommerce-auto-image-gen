@@ -23,7 +23,7 @@
     "handoff:audit": "python scripts/audit_handoff.py --root .",
     "release:audit": "node scripts/audit-release.mjs",
     "release:check": "pnpm run typecheck && pnpm run frontend:build && pnpm run handoff:audit && pnpm run release:audit",
-    "verify:quick": "pnpm run typecheck && node --test tests/bootstrap-workspace.test.ts tests/runtime-commands.test.ts tests/generation-speed.test.ts tests/brief-expansion-rules.test.ts && pnpm run frontend:build && pnpm run handoff:audit && pnpm run release:audit",
+    "verify:quick": "pnpm run typecheck && node --test tests/bootstrap-workspace.test.ts tests/runtime-commands.test.ts tests/generation-speed.test.ts tests/brief-expansion-rules.test.ts tests/preview-viewer.test.ts && pnpm run frontend:build && pnpm run handoff:audit && pnpm run release:audit",
     "verify:free": "pnpm run typecheck && pnpm test && pnpm run frontend:build && pnpm run handoff:audit && pnpm run release:audit",
     "audit:output": "node src/audit-output.ts",
     "test": "node --test tests/*.test.ts",

@@ -11,6 +11,8 @@ import {
   ImagePlus,
   Images,
   Loader2,
+  Maximize2,
+  Minimize2,
   RefreshCw,
   RotateCcw,
   Search,
@@ -26,6 +28,15 @@ import { captchaImageSource } from "./portal-captcha.js";
 import { planReferenceFileAddition, referenceUploadFeedback } from "./reference-upload.js";
 import { loadReferenceDraft, referenceDraftScope, restoreReferenceDraft, saveReferenceDraft } from "./reference-draft.js";
 import { taskImageCounts } from "./task-progress.js";
+import {
+  clampPreviewZoom,
+  defaultPreviewFit,
+  defaultPreviewMode,
+  isCompositePreviewAsset,
+  previewModeLabel,
+  previewZoomStep,
+  relatedPreviewAssets,
+} from "./preview-viewer.js";
 
 const briefPlaceholder = "请输入卖点";
 
@@ -2434,6 +2445,7 @@ function GalleryPage({ output, onBack, onRefresh, onDelete, portalUser, onPortal
             {previewAsset ? (
               <ImagePreviewModal
                 asset={previewAsset}
+                assets={allAssets}
                 index={previewIndex}
                 total={allAssets.length}
                 onClose={() => setPreviewAssetId(null)}
@@ -2563,34 +2575,251 @@ function DownloadPanel({ assets, selectedIds, downloading, error, onClose, onTog
   );
 }
 
-function ImagePreviewModal({ asset, index, total, onClose, onPrevious, onNext }) {
+function ImagePreviewModal({ asset, assets, index, total, onClose, onPrevious, onNext }) {
+  const stageRef = useRef(null);
+  const relatedAssets = useMemo(() => relatedPreviewAssets(asset, assets), [asset, assets]);
+  const composite = isCompositePreviewAsset(asset);
+  const [mode, setMode] = useState(() => defaultPreviewMode(asset));
+  const [reviewIndex, setReviewIndex] = useState(0);
+  const [fit, setFit] = useState(() => defaultPreviewFit(asset));
+  const [customZoom, setCustomZoom] = useState(null);
+  const [imageDimensions, setImageDimensions] = useState(null);
+  const [stageDimensions, setStageDimensions] = useState({ width: 0, height: 0 });
+  const [fullScreen, setFullScreen] = useState(false);
+  const reviewAsset = relatedAssets[reviewIndex] ?? relatedAssets[0] ?? asset;
+  const displayedAsset = mode === "single" && composite ? reviewAsset : asset;
+  const displayedIndex = mode === "single" && composite ? reviewIndex : index;
+  const displayedTotal = mode === "single" && composite ? relatedAssets.length : total;
+  const defaultFit = defaultPreviewFit(displayedAsset, mode);
+
+  useEffect(() => {
+    setMode(defaultPreviewMode(asset));
+    setReviewIndex(0);
+    setFit(defaultPreviewFit(asset));
+    setCustomZoom(null);
+    setImageDimensions(null);
+  }, [asset.id]);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return undefined;
+    const update = () => setStageDimensions({ width: stage.clientWidth, height: stage.clientHeight });
+    update();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    observer?.observe(stage);
+    window.addEventListener("resize", update);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", update);
+    };
+  }, [mode, fullScreen]);
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, []);
+
+  useEffect(() => {
+    setImageDimensions(null);
+    setCustomZoom(null);
+    setFit(defaultPreviewFit(displayedAsset, mode));
+    if (stageRef.current) {
+      stageRef.current.scrollTop = 0;
+      stageRef.current.scrollLeft = 0;
+    }
+  }, [displayedAsset.id, mode]);
+
+  const availableWidth = Math.max(0, stageDimensions.width - 48);
+  const availableHeight = Math.max(0, stageDimensions.height - 48);
+  const widthScale = imageDimensions?.width && availableWidth
+    ? Math.min(1, availableWidth / imageDimensions.width)
+    : 1;
+  const windowScale = imageDimensions?.height && availableHeight
+    ? Math.min(widthScale, 1, availableHeight / imageDimensions.height)
+    : widthScale;
+  const effectiveZoom = customZoom ?? (fit === "width" ? widthScale : windowScale);
+  const zoomLabel = `${Math.round(effectiveZoom * 100)}%`;
+  const imageStyle = imageDimensions
+    ? { width: `${Math.max(1, Math.round(imageDimensions.width * effectiveZoom))}px`, maxWidth: "none", maxHeight: "none" }
+    : undefined;
+
+  function applyMode(nextMode) {
+    setMode(nextMode);
+    setCustomZoom(null);
+    setFit(defaultPreviewFit(asset, nextMode));
+  }
+
+  function changeZoom(direction) {
+    setCustomZoom(clampPreviewZoom(effectiveZoom + direction * previewZoomStep));
+  }
+
+  function resetFit(nextFit = defaultFit) {
+    setCustomZoom(null);
+    setFit(nextFit);
+  }
+
+  function moveWithinPreview(direction) {
+    if (mode === "single" && composite && relatedAssets.length > 1) {
+      setReviewIndex((value) => (value + direction + relatedAssets.length) % relatedAssets.length);
+      return;
+    }
+    if (!composite || mode === "composite") {
+      if (direction < 0) onPrevious();
+      else onNext();
+    }
+  }
+
+  useEffect(() => {
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (["+", "="].includes(event.key) && mode !== "overview") {
+        event.preventDefault();
+        changeZoom(1);
+      } else if (event.key === "-" && mode !== "overview") {
+        event.preventDefault();
+        changeZoom(-1);
+      } else if (event.key === "0" && mode !== "overview") {
+        event.preventDefault();
+        resetFit();
+      } else if (event.key === "ArrowLeft" && mode === "single" && displayedTotal > 1) {
+        event.preventDefault();
+        moveWithinPreview(-1);
+      } else if (event.key === "ArrowRight" && mode === "single" && displayedTotal > 1) {
+        event.preventDefault();
+        moveWithinPreview(1);
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [mode, composite, relatedAssets.length, effectiveZoom, defaultFit, onClose]);
+
   return (
-    <div className="modal-layer preview-layer" role="dialog" aria-modal="true" aria-label="预览成品图">
-      <section className="preview-modal">
-        <header className="modal-header">
-          <div>
-            <p className="eyebrow">{asset.typeLabel} · {index + 1} / {total}</p>
-            <h2>{asset.label}</h2>
+    <div
+      className="modal-layer preview-layer"
+      role="dialog"
+      aria-modal="true"
+      aria-label="预览成品图"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section className={`preview-modal ${fullScreen ? "is-fullscreen" : ""}`}>
+        <header className="modal-header preview-modal-header">
+          <div className="preview-title">
+            <p className="eyebrow">{displayedAsset.typeLabel} · {displayedIndex + 1} / {displayedTotal}</p>
+            <h2>{displayedAsset.label}</h2>
           </div>
           <div className="preview-tools">
-            <AssetDownloadLink src={asset.url} filename={asset.filename}>
+            {mode !== "overview" ? (
+              <div className="preview-zoom-controls" aria-label="成品图缩放控制">
+                <button type="button" onClick={() => changeZoom(-1)} aria-label="缩小图片" title="缩小（-）">
+                  <ZoomOut size={17} />
+                </button>
+                <button type="button" className="zoom-readout" onClick={() => resetFit()} title="恢复默认显示方式">
+                  {zoomLabel}
+                </button>
+                <button type="button" onClick={() => changeZoom(1)} aria-label="放大图片" title="放大（+）">
+                  <ZoomIn size={17} />
+                </button>
+              </div>
+            ) : null}
+            {mode !== "overview" ? (
+              <div className="preview-fit-controls" aria-label="图片适应方式">
+                <button type="button" className={!customZoom && fit === "window" ? "active" : ""} aria-pressed={!customZoom && fit === "window"} onClick={() => resetFit("window")}>适应窗口</button>
+                <button type="button" className={!customZoom && fit === "width" ? "active" : ""} aria-pressed={!customZoom && fit === "width"} onClick={() => resetFit("width")}>适应宽度</button>
+                <button type="button" className={customZoom === 1 ? "active" : ""} aria-pressed={customZoom === 1} onClick={() => setCustomZoom(1)}>实际尺寸</button>
+              </div>
+            ) : null}
+            <button type="button" onClick={() => setFullScreen((value) => !value)} aria-label={fullScreen ? "退出全屏预览" : "全屏预览"} title={fullScreen ? "退出全屏" : "全屏预览"}>
+              {fullScreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+            </button>
+            <AssetDownloadLink src={displayedAsset.url} filename={displayedAsset.filename}>
               <Download size={17} />
               下载当前图
             </AssetDownloadLink>
-            <button className="icon-button" type="button" onClick={onClose} aria-label="关闭">
+            <button className="icon-button" type="button" onClick={onClose} aria-label="关闭预览" autoFocus>
               <X size={18} />
             </button>
           </div>
         </header>
-        <div className="preview-canvas">
-          <button className="preview-nav left" type="button" onClick={onPrevious} aria-label="上一张">
-            <ArrowLeft size={22} />
-          </button>
-          <AssetImage src={asset.url} alt={asset.label} />
-          <button className="preview-nav right" type="button" onClick={onNext} aria-label="下一张">
-            <ArrowRight size={22} />
-          </button>
+
+        {composite && relatedAssets.length ? (
+          <nav className="preview-mode-tabs" aria-label="成品图查看方式">
+            <button type="button" className={mode === "overview" ? "active" : ""} aria-pressed={mode === "overview"} onClick={() => applyMode("overview")}>总览</button>
+            <button type="button" className={mode === "single" ? "active" : ""} aria-pressed={mode === "single"} onClick={() => applyMode("single")}>逐张查看</button>
+            <button type="button" className={mode === "composite" ? "active" : ""} aria-pressed={mode === "composite"} onClick={() => applyMode("composite")}>{previewModeLabel(asset)}</button>
+            <span>滚轮浏览 · + / - 缩放 · 0 恢复 · Esc 关闭</span>
+          </nav>
+        ) : (
+          <div className="preview-keyboard-help">滚轮浏览 · + / - 缩放 · 0 恢复 · Esc 关闭</div>
+        )}
+
+        <div ref={stageRef} className={`preview-canvas mode-${mode} fit-${fit}`}>
+          {mode === "overview" ? (
+            <div className="preview-review-grid" aria-label={`${asset.label}单张总览`}>
+              {relatedAssets.map((candidate, candidateIndex) => (
+                <button
+                  className="preview-review-card"
+                  type="button"
+                  key={candidate.id}
+                  onClick={() => {
+                    setReviewIndex(candidateIndex);
+                    applyMode("single");
+                  }}
+                  aria-label={`查看第 ${candidateIndex + 1} 张：${candidate.label}`}
+                >
+                  <AssetImage src={candidate.url} alt={candidate.label} loading="lazy" />
+                  <span><strong>{candidateIndex + 1}</strong>{candidate.label}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <>
+              {mode === "single" && displayedTotal > 1 ? (
+                <button className="preview-nav left" type="button" onClick={() => moveWithinPreview(-1)} aria-label="上一张">
+                  <ArrowLeft size={22} />
+                </button>
+              ) : null}
+              <AssetImage
+                key={displayedAsset.id}
+                src={displayedAsset.url}
+                alt={displayedAsset.label}
+                style={imageStyle}
+                onLoad={(event) => setImageDimensions({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
+              />
+              {mode === "single" && displayedTotal > 1 ? (
+                <button className="preview-nav right" type="button" onClick={() => moveWithinPreview(1)} aria-label="下一张">
+                  <ArrowRight size={22} />
+                </button>
+              ) : null}
+            </>
+          )}
         </div>
+
+        {mode === "single" && composite && relatedAssets.length > 1 ? (
+          <div className="preview-thumbnail-strip" aria-label="同组图片导航">
+            {relatedAssets.map((candidate, candidateIndex) => (
+              <button
+                type="button"
+                key={candidate.id}
+                className={candidateIndex === reviewIndex ? "active" : ""}
+                aria-pressed={candidateIndex === reviewIndex}
+                onClick={() => setReviewIndex(candidateIndex)}
+                title={candidate.label}
+              >
+                <AssetImage src={candidate.url} alt="" loading="lazy" />
+                <span>{candidateIndex + 1}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
       </section>
     </div>
   );
