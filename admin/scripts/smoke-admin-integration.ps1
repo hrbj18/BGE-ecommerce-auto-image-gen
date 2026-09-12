@@ -121,7 +121,7 @@ function Invoke-RuoYiJson {
 
     $client = [System.Net.Http.HttpClient]::new()
     $client.Timeout = [TimeSpan]::FromSeconds(10)
-    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::new($Method), "http://127.0.0.1:8080$Path")
+    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::new($Method), "http://127.0.0.1:$env:RUOYI_SERVER_PORT$Path")
     try {
         if (-not [string]::IsNullOrWhiteSpace($Token)) {
             $request.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $Token)
@@ -195,7 +195,7 @@ function Invoke-RuoYiMultipart {
     )
 
     $client = [System.Net.Http.HttpClient]::new()
-    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, "http://127.0.0.1:8080$Path")
+    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, "http://127.0.0.1:$env:RUOYI_SERVER_PORT$Path")
     $form = [System.Net.Http.MultipartFormDataContent]::new()
     try {
         $request.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $Token)
@@ -351,7 +351,7 @@ try {
         redis-cli --no-auth-warning -n 1 PING 2>&1
     $summary.redisReady = $LASTEXITCODE -eq 0 -and [string]($redisPing | Select-Object -Last 1) -eq 'PONG'
 
-    $listeners = @(netstat -ano | Select-String 'LISTENING' | Select-String ':8001|:8002|:8003|:8080|:8787')
+    $listeners = @(netstat -ano | Select-String 'LISTENING' | Select-String ":8001|:8002|:8003|:$env:RUOYI_SERVER_PORT|:8787")
     $summary.loopbackListeners = $listeners.Count -eq 5 -and @($listeners | Where-Object { $_.Line -notmatch '^\s*TCP\s+127\.0\.0\.1:' }).Count -eq 0
 
     $front = Invoke-WebRequest -Uri 'http://127.0.0.1:8001/' -UseBasicParsing -TimeoutSec 5
@@ -409,10 +409,10 @@ try {
     $summary.viewerSystemDenied = [int]$viewerSystem.code -eq 403
     $viewerFiles = Invoke-RuoYiJson -Method GET -Path '/common/download?fileName=acceptance.txt&delete=true' -Token $viewerToken
     $summary.viewerCommonFilesDenied = [int]$viewerFiles.code -eq 403
-    $viewerWorkbench = Invoke-RuoYiWeb -Uri 'http://127.0.0.1:8080/workbench-api/health' `
+    $viewerWorkbench = Invoke-RuoYiWeb -Uri "http://127.0.0.1:$env:RUOYI_SERVER_PORT/workbench-api/health" `
         -AdminTokenCookie $viewerToken
     $summary.viewerWorkbenchDenied = (Get-RuoYiBusinessCode -Response $viewerWorkbench) -eq 403
-    $operatorWorkbench = Invoke-RuoYiWeb -Uri 'http://127.0.0.1:8080/workbench-api/health' `
+    $operatorWorkbench = Invoke-RuoYiWeb -Uri "http://127.0.0.1:$env:RUOYI_SERVER_PORT/workbench-api/health" `
         -AdminTokenCookie $operatorToken
     $summary.operatorWorkbenchAllowed = $summary.operatorWorkbenchAllowed -and (Get-RuoYiBusinessCode -Response $operatorWorkbench) -eq 200
     $workbenchProxy = Invoke-RuoYiWeb -Uri 'http://127.0.0.1:8001/health' `
@@ -423,7 +423,7 @@ try {
     $commonBge = Invoke-RuoYiJson -Method GET -Path '/bge/health' -Token $commonToken
     $summary.unrelatedRoleBgeDenied = [int]$commonBge.code -eq 403
 
-    $demo = Invoke-RuoYiWeb -Uri 'http://127.0.0.1:8080/test/user/list' `
+    $demo = Invoke-RuoYiWeb -Uri "http://127.0.0.1:$env:RUOYI_SERVER_PORT/test/user/list" `
         -Headers @{ Authorization = "Bearer $viewerToken" }
     $demoBodyCode = try { [int](($demo.Content | ConvertFrom-Json).code) } catch { 0 }
     $summary.upstreamDemoRemoved = $demo.StatusCode -ne 200 -or $demoBodyCode -ne 200
@@ -438,7 +438,7 @@ try {
         $summary.taskDetail = [int]$detail.code -eq 200
         $assets = @($detail.data.output.files.main) + @($detail.data.output.files.detail)
         if ($assets.Count -gt 0) {
-            $asset = Invoke-WebRequest -Uri ("http://127.0.0.1:8080" + [string]$assets[0].url) `
+            $asset = Invoke-WebRequest -Uri ("http://127.0.0.1:$env:RUOYI_SERVER_PORT" + [string]$assets[0].url) `
                 -Headers @{ Authorization = "Bearer $adminToken" } -UseBasicParsing -TimeoutSec 10
             $summary.authenticatedThumbnail = $asset.StatusCode -eq 200 -and [string]$asset.Headers.'Content-Type' -like 'image/*'
         }
@@ -461,7 +461,7 @@ try {
 
     $portalRouters = Invoke-RuoYiJson -Method GET -Path '/getRouters' -Token $portalTokenA
     $portalSystem = Invoke-RuoYiJson -Method GET -Path '/system/user/list?pageNum=1&pageSize=1' -Token $portalTokenA
-    $portalWorkbench = Invoke-RuoYiWeb -Uri 'http://127.0.0.1:8080/workbench-api/health' -AdminTokenCookie $portalTokenA
+    $portalWorkbench = Invoke-RuoYiWeb -Uri "http://127.0.0.1:$env:RUOYI_SERVER_PORT/workbench-api/health" -AdminTokenCookie $portalTokenA
     $portalRouterCount = @($portalRouters.data | Where-Object { $null -ne $_ }).Count
     $summary.portalNoAdminMenu = [int]$portalRouters.code -eq 200 -and $portalRouterCount -eq 0 -and [int]$portalSystem.code -eq 403 -and (Get-RuoYiBusinessCode -Response $portalWorkbench) -eq 403
 
@@ -506,11 +506,11 @@ try {
         $portalDetailCount = @($portalOutputA.files.detail | Where-Object { $null -ne $_ }).Count
         throw ("门户验收任务没有可验证的成品图片（main={0}, detail={1}）。" -f $portalMainCount, $portalDetailCount)
     }
-    $portalAssetAllowed = Invoke-RuoYiWeb -Uri ("http://127.0.0.1:8080" + [string]$portalAsset.url) -AdminTokenCookie $portalTokenA
-    $portalAssetDenied = Invoke-RuoYiWeb -Uri ("http://127.0.0.1:8080" + [string]$portalAsset.url) -AdminTokenCookie $portalTokenB
+    $portalAssetAllowed = Invoke-RuoYiWeb -Uri ("http://127.0.0.1:$env:RUOYI_SERVER_PORT" + [string]$portalAsset.url) -AdminTokenCookie $portalTokenA
+    $portalAssetDenied = Invoke-RuoYiWeb -Uri ("http://127.0.0.1:$env:RUOYI_SERVER_PORT" + [string]$portalAsset.url) -AdminTokenCookie $portalTokenB
     $summary.portalCookieAssetAllowed = $portalAssetAllowed.StatusCode -eq 200 -and [string]$portalAssetAllowed.Headers.'Content-Type' -like 'image/*'
     $summary.portalCookieAssetDenied = (Get-RuoYiBusinessCode -Response $portalAssetDenied) -eq 404
-    $portalAnonymous = Invoke-RuoYiWeb -Uri 'http://127.0.0.1:8080/portal-api/api/tasks'
+    $portalAnonymous = Invoke-RuoYiWeb -Uri "http://127.0.0.1:$env:RUOYI_SERVER_PORT/portal-api/api/tasks"
     $summary.portalAnonymousDenied = (Get-RuoYiBusinessCode -Response $portalAnonymous) -eq 401
 
     # This must pass the Java portal's parsed Multipart request through the

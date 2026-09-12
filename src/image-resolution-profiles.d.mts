@@ -1,5 +1,5 @@
-export type PublicImageResolutionId = "720p" | "1k" | "2k";
-export type ImageResolutionId = PublicImageResolutionId | "4k";
+export type PublicImageResolutionId = "1k" | "2k" | "4k";
+export type ImageResolutionId = PublicImageResolutionId | "720p";
 export type ProviderImageResolution = "1k" | "2k" | "4k";
 
 export interface ImageResolutionProfile {

@@ -68,7 +68,7 @@ test("isolated API admits one workflow, deduplicates retries, rejects bad upload
     "compact-2-3",
     "compact-3-4",
   ]);
-  assert.deepEqual(health.imageResolutionProfiles.map((profile) => profile.id), ["720p", "1k", "2k"]);
+  assert.deepEqual(health.imageResolutionProfiles.map((profile) => profile.id), ["1k", "2k", "4k"]);
   assert.deepEqual(health.imageAspectRatioProfiles.map((profile) => profile.id), ["ecommerce-standard", "portrait-main"]);
 
   const unauthorized = await fetch(`${baseUrl}/api/jobs`, { method: "POST", body: new FormData() });
@@ -89,9 +89,9 @@ test("isolated API admits one workflow, deduplicates retries, rejects bad upload
   assert.equal(cancelledPayload.status, "cancelled");
 
   for (const expected of [
-    { id: "compact-1-2", mainImageCount: 1, detailImageCount: 2, imageResolutionId: "720p" },
-    { id: "compact-2-3", mainImageCount: 2, detailImageCount: 3, imageResolutionId: "1k" },
-    { id: "compact-3-4", mainImageCount: 3, detailImageCount: 4, imageResolutionId: "2k" },
+    { id: "compact-1-2", mainImageCount: 1, detailImageCount: 2, imageResolutionId: "1k" },
+    { id: "compact-2-3", mainImageCount: 2, detailImageCount: 3, imageResolutionId: "2k" },
+    { id: "compact-3-4", mainImageCount: 3, detailImageCount: 4, imageResolutionId: "4k" },
   ]) {
     const compactResponse = await submitJob(baseUrl, `compact-suite-${expected.id}`, expected.id, "隔离 测试商品", expected.imageResolutionId, "portrait-main");
     const compactJob = await compactResponse.json() as {
@@ -130,7 +130,7 @@ test("isolated API admits one workflow, deduplicates retries, rejects bad upload
   assert.equal(invalidProfile.status, 400, invalidProfilePayload.error);
   assert.equal(invalidProfilePayload.code, "GENERATION_PROFILE_INVALID");
 
-  const invalidResolution = await submitJob(baseUrl, "invalid-resolution", "compact-1-2", "分辨率校验商品", "4k");
+  const invalidResolution = await submitJob(baseUrl, "invalid-resolution", "compact-1-2", "分辨率校验商品", "720p");
   const invalidResolutionPayload = await invalidResolution.json() as { code?: string; error?: string };
   assert.equal(invalidResolution.status, 400, invalidResolutionPayload.error);
   assert.equal(invalidResolutionPayload.code, "IMAGE_RESOLUTION_INVALID");

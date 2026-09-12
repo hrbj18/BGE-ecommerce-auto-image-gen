@@ -1,17 +1,5 @@
 const publicProfiles = [
   {
-    id: "720p",
-    label: "720P 预览",
-    summary: "720P 预览",
-    description: "以供应商最低 1K 生成后缩小，提升页面加载与下载速度；生图耗时接近 1K。",
-    providerResolution: "1k",
-    mainWidth: 720,
-    mainHeight: 720,
-    detailWidth: 720,
-    detailHeight: 1280,
-    nativeProviderSize: false,
-  },
-  {
     id: "1k",
     label: "1K 快速",
     summary: "1K 快速",
@@ -35,25 +23,37 @@ const publicProfiles = [
     detailHeight: evenPortraitHeight(2048),
     nativeProviderSize: true,
   },
+  {
+    id: "4k",
+    label: "4K 超清",
+    summary: "4K 超清",
+    description: "超高清交付，文件更大，生成和处理耗时更长。",
+    providerResolution: "4k",
+    mainWidth: 4096,
+    mainHeight: 4096,
+    detailWidth: 4096,
+    detailHeight: evenPortraitHeight(4096),
+    nativeProviderSize: true,
+  },
 ];
 
-const legacyFourKProfile = {
-  id: "4k",
-  label: "4K 兼容",
-  summary: "4K 兼容",
-  description: "仅兼容既有本地配置，当前不在用户界面开放。",
-  providerResolution: "4k",
-  mainWidth: 4096,
-  mainHeight: 4096,
-  detailWidth: 4096,
-  detailHeight: evenPortraitHeight(4096),
-  nativeProviderSize: true,
+const legacy720pProfile = {
+  id: "720p",
+  label: "720P 兼容",
+  summary: "720P 兼容",
+  description: "仅用于读取既有任务，不接受新的 Web 提交。",
+  providerResolution: "1k",
+  mainWidth: 720,
+  mainHeight: 720,
+  detailWidth: 720,
+  detailHeight: 1280,
+  nativeProviderSize: false,
 };
 
 const publicProfileById = new Map(publicProfiles.map((profile) => [profile.id, Object.freeze(profile)]));
 const allProfileById = new Map([
   ...publicProfileById.entries(),
-  [legacyFourKProfile.id, Object.freeze(legacyFourKProfile)],
+  [legacy720pProfile.id, Object.freeze(legacy720pProfile)],
 ]);
 
 export const defaultImageResolutionId = "2k";

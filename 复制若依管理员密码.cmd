@@ -7,7 +7,7 @@ if not exist "%POWERSHELL_EXE%" (
   pause
   exit /b 1
 )
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "admin\scripts\copy-admin-password.ps1"
+"%POWERSHELL_EXE%" -NoProfile -STA -ExecutionPolicy Bypass -File "admin\scripts\copy-admin-password.ps1"
 if errorlevel 1 (
   echo.
   echo Copying the RuoYi administrator password failed. Read the PowerShell error above.

@@ -1734,14 +1734,67 @@ test("native OpenAI provider falls back to Responses image_generation when image
     assert.equal(result.failures?.length ?? 0, 0);
     assert.equal(imageEditsCalls, 1);
     assert.equal(responsesBodies.length, 1);
-    assert.equal(responsesBodies[0].stream, true);
+    assert.equal(responsesBodies[0].stream, false);
+    assert.equal(responsesBodies[0].store, false);
     assert.equal((responsesBodies[0].tools as Array<Record<string, unknown>>)[0].type, "image_generation");
+    assert.equal((responsesBodies[0].tools as Array<Record<string, unknown>>)[0].model, "gpt-image-2");
     assert.equal((responsesBodies[0].tools as Array<Record<string, unknown>>)[0].size, "1024x1024");
     const metadata = await sharp(result.mainImages[0].path).metadata();
     assert.equal(metadata.width, 2048);
     assert.equal(metadata.height, 2048);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("native OpenAI provider can use Responses image_generation directly", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-openai-direct-responses-image-"));
+  const productPath = path.join(tmp, "product.png");
+  const generatedPath = path.join(tmp, "generated.png");
+  await writeNoiseImage(productPath, 600, 600);
+  await writeNoiseImage(generatedPath, 1024, 1024);
+  const generatedBase64 = (await fs.readFile(generatedPath)).toString("base64");
+  const responsesBodies: Array<Record<string, unknown>> = [];
+  const originalFetch = globalThis.fetch;
+  const originalMode = process.env.OPENAI_IMAGE_API_MODE;
+  const originalResponseModel = process.env.OPENAI_IMAGE_RESPONSE_MODEL;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/images/edits")) throw new Error("Images endpoint must not be called");
+    if (url.endsWith("/responses")) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      responsesBodies.push(body);
+      return new Response(JSON.stringify({
+        status: "completed",
+        output: [{ type: "image_generation_call", result: generatedBase64 }]
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    throw new Error(`Unexpected fetch URL: ${url}`);
+  }) as typeof fetch;
+  process.env.OPENAI_IMAGE_API_MODE = "responses";
+  process.env.OPENAI_IMAGE_RESPONSE_MODEL = "relay-driver-model";
+
+  try {
+    const config = makeConfig(tmp);
+    config.openai.imageProvider = "openai";
+    config.openai.apiKey = "test-key";
+    const result = await new OpenAiImageGenerator(config).generate(
+      { ...makeTask(tmp, productPath), mainImageCount: 1, generateDetail: false },
+      makeBrand(),
+      [{ sourceName: "product.png", path: productPath, mimeType: "image/png" }],
+      makeAnalysis(),
+      path.join(tmp, "out")
+    );
+
+    assert.equal(result.mainImages.length, 1);
+    assert.equal(result.failures?.length ?? 0, 0);
+    assert.equal(responsesBodies.length, 1);
+    assert.equal(responsesBodies[0].model, "relay-driver-model");
+    assert.equal((responsesBodies[0].tools as Array<Record<string, unknown>>)[0].model, "gpt-image-2");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreTestEnvironment("OPENAI_IMAGE_API_MODE", originalMode);
+    restoreTestEnvironment("OPENAI_IMAGE_RESPONSE_MODEL", originalResponseModel);
   }
 });
 

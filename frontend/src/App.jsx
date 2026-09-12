@@ -67,9 +67,9 @@ const fallbackGenerationProfiles = [
   { id: "compact-3-4", label: "核心卖点套图", summary: "3 主图 + 4 详情页", suiteRatio: "主图 1:1 / 详情页 9:16", mainImageCount: 3, detailImageCount: 4 },
 ];
 const fallbackImageResolutionProfiles = [
-  { id: "720p", label: "720P 预览", summary: "720P 预览", description: "1K 生成后缩小，生图耗时接近 1K", providerResolution: "1k" },
   { id: "1k", label: "1K 快速", summary: "1K 快速", description: "供应商原生 1K，适合快速验证", providerResolution: "1k" },
   { id: "2k", label: "2K 标准", summary: "2K 标准", description: "当前标准交付清晰度", providerResolution: "2k" },
+  { id: "4k", label: "4K 超清", summary: "4K 超清", description: "超高清交付，文件更大、耗时更长", providerResolution: "4k" },
 ];
 const fallbackImageAspectRatioProfiles = [
   { id: "ecommerce-standard", label: "电商标准", summary: "主图 1:1 / 详情页 9:16", description: "方形主图，竖版详情页" },

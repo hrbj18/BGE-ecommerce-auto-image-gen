@@ -9,14 +9,15 @@ import {
   resolveImageResolutionProfile,
 } from "../src/image-resolution-profiles.mjs";
 
-test("public image resolution profiles expose 720p, 1k and 2k but keep 4k hidden", () => {
+test("public image resolution profiles expose 1k, 2k and 4k but keep 720p submission disabled", () => {
   assert.equal(defaultImageResolutionId, "2k");
-  assert.deepEqual(listImageResolutionProfiles().map((profile) => profile.id), ["720p", "1k", "2k"]);
-  assert.equal(findImageResolutionProfile("4k"), null);
+  assert.deepEqual(listImageResolutionProfiles().map((profile) => profile.id), ["1k", "2k", "4k"]);
+  assert.equal(findImageResolutionProfile("720p"), null);
+  assert.equal(findImageResolutionProfile("4K")?.id, "4k");
 });
 
-test("720p is a downscaled delivery profile backed by the provider 1k request", () => {
-  const profile = resolveImageResolutionProfile("720P");
+test("720p remains readable for existing task metadata", () => {
+  const profile = imageResolutionProfileForTask({ imageResolutionId: "720p" });
   assert.equal(profile.id, "720p");
   assert.equal(profile.providerResolution, "1k");
   assert.equal(profile.nativeProviderSize, false);
@@ -33,9 +34,9 @@ test("task resolution wins while old tasks fall back to the configured provider 
 
 test("role dimensions support the selectable portrait main ratio", () => {
   const expected = [
-    ["720p", 720, 960],
     ["1k", 1024, 1366],
     ["2k", 2048, 2732],
+    ["4k", 4096, 5462],
   ] as const;
   for (const [id, width, height] of expected) {
     const profile = resolveImageResolutionProfile(id);

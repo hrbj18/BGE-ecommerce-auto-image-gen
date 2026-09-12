@@ -1438,10 +1438,12 @@ export class OpenAiImageGenerator implements ImageGenerator {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: this.config.openai.textModel || this.config.openai.imageModel,
-        stream: true,
+        model: process.env.OPENAI_IMAGE_RESPONSE_MODEL?.trim() || this.config.openai.textModel || this.config.openai.imageModel,
+        stream: false,
+        store: false,
         tools: [{
           type: "image_generation",
+          model: this.config.openai.imageModel,
           size: openAiImageSize(options.aspectRatio),
           quality: "high",
           output_format: "png"
@@ -1475,10 +1477,15 @@ export class OpenAiImageGenerator implements ImageGenerator {
     aspectRatio?: "1:1" | "3:4" | "9:16";
   }): Promise<AiEchoGenerationResult> {
     const maxAttempts = openAiImageMaxAttempts();
+    const imageApiMode = openAiImageApiMode();
     const submittedAt = new Date().toISOString();
     let lastError: unknown;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
+        if (imageApiMode === "responses") {
+          await this.generateWithOpenAiResponsesImage(options);
+          return { taskId: `openai-responses-image-${Date.now()}`, submittedAt, attempts: attempt };
+        }
         await this.generateImage(options);
         return { taskId: `openai-native-${Date.now()}`, submittedAt, attempts: attempt };
       } catch (error) {
@@ -2368,6 +2375,12 @@ function imageMimeType(filePath: string): string {
 function openAiImageSize(aspectRatio?: "1:1" | "3:4" | "9:16"): string {
   if (aspectRatio === "3:4" || aspectRatio === "9:16") return "1024x1536";
   return "1024x1024";
+}
+
+function openAiImageApiMode(): "auto" | "responses" {
+  const value = (process.env.OPENAI_IMAGE_API_MODE ?? "auto").trim().toLowerCase();
+  if (value === "auto" || value === "responses") return value;
+  throw new Error("OPENAI_IMAGE_API_MODE must be auto or responses.");
 }
 
 function buildOpenAiResponsesImagePrompt(prompt: string, aspectRatio?: "1:1" | "3:4" | "9:16"): string {

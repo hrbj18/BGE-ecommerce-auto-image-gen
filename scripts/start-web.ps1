@@ -31,6 +31,25 @@ function Test-HttpOk {
   }
 }
 
+function Resolve-NodeCommand {
+  $nodeCommand = Get-Command node.exe, node -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($nodeCommand) { return $nodeCommand.Source }
+
+  $candidates = @()
+  if ($env:LOCALAPPDATA) {
+    $candidates += Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA "Programs\node*\node.exe") -File -ErrorAction SilentlyContinue |
+      Sort-Object FullName -Descending |
+      Select-Object -ExpandProperty FullName
+  }
+  if ($env:ProgramFiles) { $candidates += Join-Path $env:ProgramFiles "nodejs\node.exe" }
+  $nodePath = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+  if (-not $nodePath) { return $null }
+
+  $nodeDirectory = Split-Path -Parent $nodePath
+  $env:Path = "$nodeDirectory;$env:Path"
+  return $nodePath
+}
+
 function Resolve-PnpmRunner {
   $pnpmCommand = Get-Command pnpm.cmd, pnpm -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($pnpmCommand) {
@@ -68,9 +87,9 @@ function Resolve-PnpmRunner {
 
 try {
   Assert-PathExists -Path $Root -Name "Project root"
-  $Node = Get-Command node -ErrorAction SilentlyContinue
+  $Node = Resolve-NodeCommand
   if (-not $Node) { throw "没有找到 Node.js。请安装 Node.js 24 或更高版本，关闭窗口后重新启动。" }
-  $NodeVersionText = (& $Node.Source --version).Trim().TrimStart("v")
+  $NodeVersionText = (& $Node --version).Trim().TrimStart("v")
   $NodeVersion = [version]$NodeVersionText
   if ($NodeVersion.Major -lt 24) { throw "需要 Node.js 24 或更高版本，当前版本：$NodeVersionText" }
   $PnpmRunner = Resolve-PnpmRunner

@@ -2,7 +2,8 @@ import { defineConfig, loadEnv } from 'vite'
 import path from 'path'
 import createVitePlugins from './vite/plugins'
 
-const baseUrl = 'http://127.0.0.1:8080' // 本机若依后端接口
+const backendPort = process.env.RUOYI_SERVER_PORT || '18080'
+const baseUrl = `http://127.0.0.1:${backendPort}` // 本机若依后端接口
 const workbenchUrl = 'http://127.0.0.1:8002' // 仅供若依页面反向代理的本机作图前端
 const portalUrl = 'http://127.0.0.1:8003' // 仅供用户端门户反向代理的本机 React 前端
 

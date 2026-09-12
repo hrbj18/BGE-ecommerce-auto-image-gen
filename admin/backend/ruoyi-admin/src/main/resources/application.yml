@@ -16,8 +16,8 @@ ruoyi:
 # 开发环境配置
 server:
   address: ${RUOYI_SERVER_ADDRESS:127.0.0.1}
-  # 服务器的HTTP端口，默认为8080
-  port: 8080
+  # 避开 Docker/WinNAT 在部分 Windows 主机上保留的 8080 端口段
+  port: ${RUOYI_SERVER_PORT:18080}
   servlet:
     # 应用的访问路径
     context-path: /

@@ -10,11 +10,22 @@ $ErrorActionPreference = 'Stop'
     -AdminSecretPath $AdminSecretPath
 . (Join-Path $PSScriptRoot 'backend-artifact.ps1')
 
+# Keep independently refreshed backends compatible with hosts that need TCP
+# selector wakeups instead of Windows AF_UNIX sockets.
+$jdkTcpPatch = Join-Path $env:LOCALAPPDATA 'BGE-RuoYi-Infra\jdk-tcp-patch\classes'
+if (Test-Path -LiteralPath $jdkTcpPatch) {
+    $patchOption = "--patch-module=java.base=$jdkTcpPatch"
+    if ([string]$env:JDK_JAVA_OPTIONS -notmatch [regex]::Escape($patchOption)) {
+        $env:JDK_JAVA_OPTIONS = ("$env:JDK_JAVA_OPTIONS $patchOption").Trim()
+    }
+}
+
 $repositoryRoot = $BgeRuoYiRepositoryRoot
 $runtimeRoot = Join-Path $repositoryRoot '.local-web\ruoyi'
 $logRoot = Join-Path $runtimeRoot 'logs'
 $processFile = Join-Path $runtimeRoot 'processes.json'
 $backendJar = Join-Path $repositoryRoot 'admin\backend\ruoyi-admin\target\ruoyi-admin.jar'
+$backendPort = [int]$env:RUOYI_SERVER_PORT
 
 function Test-LocalPort {
     param([Parameter(Mandatory = $true)][int]$Port)
@@ -46,7 +57,7 @@ function Wait-BackendReady {
             throw "RuoYi backend exited with code $($Process.ExitCode)."
         }
         try {
-            $response = Invoke-WebRequest -Uri 'http://127.0.0.1:8080/captchaImage' `
+            $response = Invoke-WebRequest -Uri "http://127.0.0.1:$backendPort/captchaImage" `
                 -UseBasicParsing -TimeoutSec 2
             if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) { return }
         }
@@ -61,10 +72,10 @@ function Wait-BackendReady {
 function Wait-BackendPortClosed {
     $deadline = (Get-Date).AddSeconds(20)
     do {
-        if (-not (Test-LocalPort -Port 8080)) { return }
+        if (-not (Test-LocalPort -Port $backendPort)) { return }
         Start-Sleep -Milliseconds 200
     } while ((Get-Date) -lt $deadline)
-    throw 'RuoYi backend port 8080 did not close after stopping the managed process.'
+    throw "RuoYi backend port $backendPort did not close after stopping the managed process."
 }
 
 function Write-ProcessState {

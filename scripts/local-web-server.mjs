@@ -1786,7 +1786,7 @@ async function readJsonBody(req) {
 
 async function runWorkflow(job, lease) {
   try {
-    loadDotEnv(path.join(rootDir, ".env"), { override: true });
+    loadDotEnv(path.join(rootDir, ".env"), { override: process.env.NODE_ENV !== "test" });
     job.status = "submitting";
     job.message = "正在检查素材并启动本地工作流。";
     job.updatedAt = new Date().toISOString();

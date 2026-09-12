@@ -8,6 +8,34 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $portalUri = 'http://127.0.0.1:8001/portal/'
+
+if (-not (Test-Path -LiteralPath $InfrastructureCredentialPath) -or
+        -not (Test-Path -LiteralPath $AdminSecretPath)) {
+    $codexPackageRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Packages'
+    $virtualizedDirectories = @(
+        Get-ChildItem -LiteralPath $codexPackageRoot -Directory -Filter 'OpenAI.Codex_*' -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                Join-Path $_.FullName 'LocalCache\Local\BGE-RuoYi-Infra'
+            } |
+            Where-Object {
+                (Test-Path -LiteralPath (Join-Path $_ 'credentials.clixml')) -and
+                (Test-Path -LiteralPath (Join-Path $_ 'admin-secrets.clixml'))
+            }
+    )
+
+    if ($virtualizedDirectories.Count -eq 1) {
+        if (-not (Test-Path -LiteralPath $InfrastructureCredentialPath)) {
+            $InfrastructureCredentialPath = Join-Path $virtualizedDirectories[0] 'credentials.clixml'
+        }
+        if (-not (Test-Path -LiteralPath $AdminSecretPath)) {
+            $AdminSecretPath = Join-Path $virtualizedDirectories[0] 'admin-secrets.clixml'
+        }
+    }
+    elseif ($virtualizedDirectories.Count -gt 1) {
+        throw 'Multiple Codex virtualized credential directories were found. Run the local infrastructure repair tool.'
+    }
+}
+
 . (Join-Path $PSScriptRoot 'backend-artifact.ps1')
 . (Join-Path $PSScriptRoot 'credential-status.ps1')
 $launcherRunId = [Guid]::NewGuid().ToString('N')
@@ -82,7 +110,7 @@ function Test-HttpEndpoint {
 function Test-UserPortalStack {
     $engineReady = Test-HttpEndpoint -Uri 'http://127.0.0.1:8787/health' `
         -Headers @{ Authorization = "Bearer $env:BGE_ENGINE_ACCESS_TOKEN" }
-    $backendReady = Test-HttpEndpoint -Uri 'http://127.0.0.1:8080/captchaImage'
+    $backendReady = Test-HttpEndpoint -Uri "http://127.0.0.1:$env:RUOYI_SERVER_PORT/captchaImage"
     $portalFrontendReady = Test-HttpEndpoint -Uri 'http://127.0.0.1:8003/portal/' `
         -RequiredText 'id="root"'
     $unifiedEntryReady = Test-HttpEndpoint -Uri $portalUri `

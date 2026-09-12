@@ -10,6 +10,16 @@ $ErrorActionPreference = 'Stop'
     -AdminSecretPath $AdminSecretPath
 . (Join-Path $PSScriptRoot 'backend-artifact.ps1')
 
+# Some Windows hosts expose AF_UNIX but cannot connect to it. A local runtime
+# patch falls back to TCP for Java selector wakeups when the installer created it.
+$jdkTcpPatch = Join-Path $env:LOCALAPPDATA 'BGE-RuoYi-Infra\jdk-tcp-patch\classes'
+if (Test-Path -LiteralPath $jdkTcpPatch) {
+    $patchOption = "--patch-module=java.base=$jdkTcpPatch"
+    if ([string]$env:JDK_JAVA_OPTIONS -notmatch [regex]::Escape($patchOption)) {
+        $env:JDK_JAVA_OPTIONS = ("$env:JDK_JAVA_OPTIONS $patchOption").Trim()
+    }
+}
+
 $repositoryRoot = $BgeRuoYiRepositoryRoot
 $runtimeRoot = Join-Path $repositoryRoot '.local-web\ruoyi'
 $logRoot = Join-Path $runtimeRoot 'logs'
@@ -74,7 +84,8 @@ function Wait-HttpReady {
     throw "$Name 在 $TimeoutSeconds 秒内没有通过就绪检查。"
 }
 
-foreach ($portToCheck in @(8787, 8001, 8002, 8003, 8080)) {
+$backendPort = [int]$env:RUOYI_SERVER_PORT
+foreach ($portToCheck in @(8787, 8001, 8002, 8003, $backendPort)) {
     if (Test-LocalPort -Port $portToCheck) {
         throw "本机端口 $portToCheck 已被占用。为避免连接到错误服务，本次没有启动若依。"
     }
@@ -146,7 +157,7 @@ try {
 
     Wait-HttpReady -Process $nodeProcess -Name 'BGE Node' -Uri 'http://127.0.0.1:8787/health' `
         -Headers @{ Authorization = "Bearer $env:BGE_ENGINE_ACCESS_TOKEN" }
-    Wait-HttpReady -Process $backendProcess -Name '若依后端' -Uri 'http://127.0.0.1:8080/captchaImage' -TimeoutSeconds 60
+    Wait-HttpReady -Process $backendProcess -Name '若依后端' -Uri "http://127.0.0.1:$backendPort/captchaImage" -TimeoutSeconds 60
     Wait-HttpReady -Process $workbenchProcess -Name '电商作图前端' -Uri 'http://127.0.0.1:8002/workbench/'
     Wait-HttpReady -Process $portalProcess -Name '电商作图用户端' -Uri 'http://127.0.0.1:8003/portal/'
     Wait-HttpReady -Process $frontendProcess -Name '若依前端' -Uri 'http://127.0.0.1:8001'

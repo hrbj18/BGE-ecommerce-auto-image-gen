@@ -65,6 +65,7 @@ $env:RUOYI_REDIS_PASSWORD = $redisPassword
 $env:RUOYI_TOKEN_SECRET = $tokenSecret
 $env:RUOYI_PROFILE = Join-Path $repoRoot '.local-web\ruoyi\upload'
 $env:RUOYI_SERVER_ADDRESS = '127.0.0.1'
+$env:RUOYI_SERVER_PORT = '18080'
 $env:RUOYI_SWAGGER_ENABLED = 'false'
 $env:RUOYI_SPRINGDOC_ENABLED = 'false'
 $env:RUOYI_DRUID_WEB_STAT_ENABLED = 'false'

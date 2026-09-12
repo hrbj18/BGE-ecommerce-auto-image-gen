@@ -37,7 +37,7 @@ function Invoke-RuoYiJson {
     if (-not [string]::IsNullOrWhiteSpace($Token)) {
         $headers.Authorization = "Bearer $Token"
     }
-    $response = Invoke-WebRequest -Uri "http://127.0.0.1:8080$Path" -Method $Method `
+    $response = Invoke-WebRequest -Uri "http://127.0.0.1:$env:RUOYI_SERVER_PORT$Path" -Method $Method `
         -Headers $headers -Body ($Body | ConvertTo-Json -Compress) -ContentType 'application/json' `
         -UseBasicParsing -TimeoutSec 10
     return $response.Content | ConvertFrom-Json

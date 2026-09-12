@@ -45,7 +45,7 @@ test("the desktop launchers serialize startup, refresh stale backend artifacts, 
   }
   assert.match(portalStart, /Test-UserPortalStack/);
   assert.match(portalStart, /127\.0\.0\.1:8787\/health/);
-  assert.match(portalStart, /127\.0\.0\.1:8080\/captchaImage/);
+  assert.match(portalStart, /127\.0\.0\.1:\$env:RUOYI_SERVER_PORT\/captchaImage/);
   assert.match(portalStart, /127\.0\.0\.1:8003\/portal\//);
   assert.match(portalStart, /Docker\\Docker\\Docker Desktop\.exe/);
   assert.match(portalStart, /-WindowStyle Hidden/);
@@ -141,7 +141,7 @@ test("the unified 8001 entry keeps the workbench behind RuoYi authorization", as
   assert.match(adminVite, /port:\s*8001/);
   assert.match(adminVite, /['"]\/workbench['"]:\s*\{/);
   assert.match(adminVite, /target:\s*workbenchUrl/);
-  assert.match(start, /@\(8787, 8001, 8002, 8003, 8080\)/);
+  assert.match(start, /@\(8787, 8001, 8002, 8003, \$backendPort\)/);
   assert.match(start, /BGE_WORKBENCH_BASE = ['"]\/workbench\//);
   assert.match(workbenchVite, /base:\s*process\.env\.BGE_WORKBENCH_BASE \|\| ['"]\/['"]/);
   assert.match(sql, /'bge_operator'/);
@@ -226,7 +226,7 @@ test("RuoYi local bootstrap removes upstream demo and default-credential write p
   assert.match(bootstrap, /matchesPassword\(UPSTREAM_DEFAULT_PASSWORD, admin\.getPassword\(\)\)/);
   assert.match(bootstrap, /resetUserPwd\(admin\.getUserId\(\), SecurityUtils\.encryptPassword\(bootstrapPassword\)\)/);
   assert.match(databaseInit, /拒绝使用 MySQL root/);
-  assert.match(secretInit, /\$adminPassword = New-RandomSecureSecret -ByteCount 24/);
+  assert.match(secretInit, /\$adminPassword = New-RandomSecureSecret -ByteCount 12/);
   assert.match(secretInit, /RuoYiAdminPassword = \$adminPassword/);
   assert.match(secretInit, /\$existingTokenSecret -is \[System\.Security\.SecureString\]/);
   assert.match(secretInit, /\$existingLocalWebToken -is \[System\.Security\.SecureString\]/);

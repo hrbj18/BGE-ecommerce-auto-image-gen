@@ -73,7 +73,8 @@ $localWebToken = if (-not $Force -and $existingLocalWebToken -is [System.Securit
 }
 $adminPassword = $existingAdminPassword
 if (-not ($adminPassword -is [System.Security.SecureString])) {
-    $adminPassword = New-RandomSecureSecret -ByteCount 24
+    # RuoYi validates login passwords at 20 characters; 12 bytes encode to 16 URL-safe characters.
+    $adminPassword = New-RandomSecureSecret -ByteCount 12
 }
 
 $payload = [pscustomobject]@{

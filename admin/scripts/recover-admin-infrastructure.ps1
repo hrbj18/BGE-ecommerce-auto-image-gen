@@ -202,7 +202,8 @@ if (-not $validAdminSecret) {
         CreatedAt = (Get-Date).ToUniversalTime().ToString('o')
         RuoYiTokenSecret = ConvertTo-SecureString -String (New-RandomSecret -ByteCount 64) -AsPlainText -Force
         LocalWebAccessToken = ConvertTo-SecureString -String (New-RandomSecret -ByteCount 32) -AsPlainText -Force
-        RuoYiAdminPassword = ConvertTo-SecureString -String (New-RandomSecret -ByteCount 24) -AsPlainText -Force
+        # RuoYi validates login passwords at 20 characters; 12 bytes encode to 16 URL-safe characters.
+        RuoYiAdminPassword = ConvertTo-SecureString -String (New-RandomSecret -ByteCount 12) -AsPlainText -Force
     } | Export-Clixml -LiteralPath $AdminSecretPath -Force
 }
 
