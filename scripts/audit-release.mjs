@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
@@ -22,7 +22,9 @@ try {
   process.exit(1);
 }
 
-const files = [...new Set(gitPaths(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]))].sort();
+const files = [...new Set(gitPaths(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]))]
+  .filter((file) => existsSync(resolve(root, file)))
+  .sort();
 const errors = [];
 const allowedReference = "已完成/参考案例分析/zcool-case-library.json";
 const forbiddenExact = new Set([".env", "frontend/.npmrc", ".test-targeted.log"]);

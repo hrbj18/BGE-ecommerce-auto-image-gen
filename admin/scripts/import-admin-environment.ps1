@@ -44,12 +44,16 @@ $redisPort = [string]$infrastructure.RedisPort
 $redisPassword = ConvertTo-PlainSecret $infrastructure.RedisPassword
 $tokenSecret = ConvertTo-PlainSecret $adminSecrets.RuoYiTokenSecret
 $localWebToken = ConvertTo-PlainSecret $adminSecrets.LocalWebAccessToken
-$adminPassword = ConvertTo-PlainSecret $adminSecrets.RuoYiAdminPassword
+$legacyAdminPassword = if ($adminSecrets.RuoYiAdminPassword -is [System.Security.SecureString]) {
+    ConvertTo-PlainSecret $adminSecrets.RuoYiAdminPassword
+} else {
+    $null
+}
 
 if ($dbName -notmatch '^[A-Za-z0-9_-]+$') {
     throw 'MySQL 数据库名称不符合安全规则。'
 }
-foreach ($required in @($dbHost, $dbPort, $dbName, $dbUser, $dbPassword, $redisHost, $redisPort, $redisPassword, $tokenSecret, $localWebToken, $adminPassword)) {
+foreach ($required in @($dbHost, $dbPort, $dbName, $dbUser, $dbPassword, $redisHost, $redisPort, $redisPassword, $tokenSecret, $localWebToken)) {
     if ([string]::IsNullOrWhiteSpace([string]$required)) {
         throw '基础设施或若依本机密钥存在空值。'
     }
@@ -71,7 +75,11 @@ $env:RUOYI_SERVER_PORT = '18080'
 $env:RUOYI_SWAGGER_ENABLED = 'false'
 $env:RUOYI_SPRINGDOC_ENABLED = 'false'
 $env:RUOYI_DRUID_WEB_STAT_ENABLED = 'false'
-$env:RUOYI_ADMIN_BOOTSTRAP_PASSWORD = $adminPassword
+if ([string]::IsNullOrWhiteSpace($legacyAdminPassword)) {
+    Remove-Item Env:RUOYI_ADMIN_LEGACY_PASSWORD -ErrorAction SilentlyContinue
+} else {
+    $env:RUOYI_ADMIN_LEGACY_PASSWORD = $legacyAdminPassword
+}
 $env:BGE_ENGINE_BASE_URL = 'http://127.0.0.1:8787'
 $env:LOCAL_WEB_HOST = '127.0.0.1'
 $env:LOCAL_WEB_PORT = '8787'

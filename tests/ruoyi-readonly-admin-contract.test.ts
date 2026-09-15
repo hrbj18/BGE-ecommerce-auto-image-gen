@@ -13,8 +13,7 @@ test("clickable RuoYi launchers use the built-in PowerShell without changing glo
   const launchers = await Promise.all([
     source("启动若依管理后台.cmd"),
     source("启动用户端.cmd"),
-    source("修复若依本机环境.cmd"),
-    source("复制若依管理员密码.cmd")
+    source("修复若依本机环境.cmd")
   ]);
 
   for (const launcher of launchers) {
@@ -77,8 +76,11 @@ test("the desktop launchers serialize startup, refresh stale backend artifacts, 
   assert.match(artifact, /src/);
   assert.match(artifact, /main/);
   assert.match(artifact, /-DskipTests/);
+  assert.match(artifact, /Test-BgeBackendArtifactRunnable/);
+  assert.ok(artifact.includes("Main-Class:\\s+org\\.springframework\\.boot\\.loader\\.launch\\.JarLauncher"));
   assert.doesNotMatch(artifact, /(?:password|secret|token)\s*=\s*['"][^'"]+['"]/i);
-  assert.match(refresh, /recorded RuoYi backend process could not be verified/);
+  assert.match(refresh, /backend port is occupied by an unverified process/);
+  assert.match(refresh, /previously recorded RuoYi backend is already stopped/);
   assert.match(refresh, /Wait-BackendPortClosed/);
   assert.match(refresh, /Wait-BackendReady/);
   assert.match(refresh, /backendRefreshedAt/);
@@ -277,7 +279,7 @@ test("points are server-side, idempotent and manageable without granting portal 
 });
 
 test("RuoYi local bootstrap removes upstream demo and default-credential write paths", async () => {
-  const [common, login, application, security, environment, bootstrap, databaseInit, secretInit, recovery, start, passwordUpdate, encodingRepair] = await Promise.all([
+  const [common, login, application, security, environment, bootstrap, databaseInit, secretInit, recovery, start, encodingRepair] = await Promise.all([
     source("admin/backend/ruoyi-admin/src/main/java/com/ruoyi/web/controller/common/CommonController.java"),
     source("admin/frontend/src/views/login.vue"),
     source("admin/backend/ruoyi-admin/src/main/resources/application.yml"),
@@ -288,7 +290,6 @@ test("RuoYi local bootstrap removes upstream demo and default-credential write p
     source("admin/scripts/initialize-admin-secrets.ps1"),
     source("admin/scripts/recover-admin-infrastructure.ps1"),
     source("admin/scripts/start-admin.ps1"),
-    source("admin/scripts/set-admin-password.ps1"),
     source("admin/scripts/repair-admin-encoding.ps1")
   ]);
 
@@ -300,17 +301,19 @@ test("RuoYi local bootstrap removes upstream demo and default-credential write p
   assert.doesNotMatch(login, /password:\s*["']admin123["']/);
   assert.match(application, /api-docs:\s*\r?\n\s+enabled:\s*\$\{RUOYI_SPRINGDOC_ENABLED:false\}/);
   assert.doesNotMatch(security, /requestMatchers\([^\r\n]*\/v3\/api-docs/);
-  assert.match(environment, /RUOYI_ADMIN_BOOTSTRAP_PASSWORD = \$adminPassword/);
-  assert.match(bootstrap, /MINIMUM_LOCAL_PASSWORD_LENGTH = 6/);
-  assert.match(bootstrap, /bootstrapPassword\.length\(\) < MINIMUM_LOCAL_PASSWORD_LENGTH/);
+  assert.doesNotMatch(environment, /RUOYI_ADMIN_BOOTSTRAP_PASSWORD/);
+  assert.match(environment, /RUOYI_ADMIN_LEGACY_PASSWORD/);
+  assert.match(bootstrap, /INITIAL_ADMIN_PASSWORD = "123456"/);
   assert.match(bootstrap, /matchesPassword\(UPSTREAM_DEFAULT_PASSWORD, admin\.getPassword\(\)\)/);
-  assert.match(bootstrap, /resetUserPwd\(admin\.getUserId\(\), SecurityUtils\.encryptPassword\(bootstrapPassword\)\)/);
+  assert.match(bootstrap, /matchesPassword\(legacyAdminPassword, admin\.getPassword\(\)\)/);
+  assert.match(bootstrap, /resetUserPwd\(admin\.getUserId\(\), SecurityUtils\.encryptPassword\(INITIAL_ADMIN_PASSWORD\)\)/);
   assert.match(databaseInit, /拒绝使用 MySQL root/);
-  assert.match(secretInit, /\$adminPassword = New-RandomSecureSecret -ByteCount 12/);
-  assert.match(secretInit, /RuoYiAdminPassword = \$adminPassword/);
+  assert.doesNotMatch(secretInit, /New-RandomSecureSecret -ByteCount 12/);
+  assert.doesNotMatch(secretInit, /RuoYiAdminPassword\s*=/);
+  assert.match(secretInit, /hasLegacyAdminPassword/);
   assert.match(secretInit, /\$existingTokenSecret -is \[System\.Security\.SecureString\]/);
   assert.match(secretInit, /\$existingLocalWebToken -is \[System\.Security\.SecureString\]/);
-  assert.doesNotMatch(secretInit, /Write-(?:Host|Output)[^\r\n]*\$(?:plainTextSecret|adminPassword)/);
+  assert.doesNotMatch(secretInit, /Write-(?:Host|Output)[^\r\n]*\$plainTextSecret/);
   assert.match(recovery, /if \(\$mysqlExists -xor \$redisExists\)/);
   assert.match(recovery, /if \(\$mysqlExists -and -not \$validInfrastructure\)/);
   assert.match(recovery, /Backup-ReplacedCredential/);
@@ -318,12 +321,22 @@ test("RuoYi local bootstrap removes upstream demo and default-credential write p
   assert.match(recovery, /127\.0\.0\.1:\$\{dbPort\}:3306/);
   assert.match(recovery, /127\.0\.0\.1:6379:6379/);
   assert.doesNotMatch(recovery, /docker\s+(?:container\s+)?rm\b/i);
+  assert.doesNotMatch(recovery, /RuoYiAdminPassword/);
   assert.match(start, /-WorkingDirectory \$frontendRoot/);
   assert.match(start, /'--strictPort'/);
-  assert.match(passwordUpdate, /\/system\/user\/profile\/updatePwd/);
-  assert.doesNotMatch(passwordUpdate, /\/system\/user\/resetPwd/);
-  assert.match(passwordUpdate, /RuoYiAdminPassword = \$NewPassword/);
-  assert.doesNotMatch(passwordUpdate, /Write-(?:Host|Output)[^\r\n]*\$(?:newPlainPassword|oldPassword)/);
+  assert.match(start, /RemoveLegacyAdminPassword/);
+  await assert.rejects(
+    fs.stat(path.join(projectRoot, "admin/scripts/copy-admin-password.ps1")),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT"
+  );
+  await assert.rejects(
+    fs.stat(path.join(projectRoot, "复制若依管理员密码.cmd")),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT"
+  );
+  await assert.rejects(
+    fs.stat(path.join(projectRoot, "admin/scripts/set-admin-password.ps1")),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT"
+  );
   assert.match(databaseInit, /docker cp \$Path \$containerTarget/);
   assert.doesNotMatch(databaseInit, /Get-Content[^\r\n]*\|[\s\S]{0,160}mysql --default-character-set=utf8mb4/);
   assert.match(encodingRepair, /mysql:8\.4/);

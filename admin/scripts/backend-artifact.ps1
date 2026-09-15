@@ -12,13 +12,42 @@ function Get-BgeBackendRuntimeInputs {
     }
 }
 
+function Test-BgeBackendArtifactRunnable {
+    param([Parameter(Mandatory = $true)][string]$BackendJar)
+
+    if (-not (Test-Path -LiteralPath $BackendJar)) {
+        return $false
+    }
+
+    $archive = $null
+    $reader = $null
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [IO.Compression.ZipFile]::OpenRead($BackendJar)
+        $manifest = $archive.GetEntry('META-INF/MANIFEST.MF')
+        if ($null -eq $manifest) {
+            return $false
+        }
+        $reader = [IO.StreamReader]::new($manifest.Open())
+        $content = $reader.ReadToEnd()
+        return $content -match '(?m)^Main-Class:\s+org\.springframework\.boot\.loader\.launch\.JarLauncher\s*$'
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($null -ne $reader) { $reader.Dispose() }
+        if ($null -ne $archive) { $archive.Dispose() }
+    }
+}
+
 function Test-BgeBackendArtifactFresh {
     param(
         [Parameter(Mandatory = $true)][string]$RepositoryRoot,
         [Parameter(Mandatory = $true)][string]$BackendJar
     )
 
-    if (-not (Test-Path -LiteralPath $BackendJar)) {
+    if (-not (Test-BgeBackendArtifactRunnable -BackendJar $BackendJar)) {
         return $false
     }
 

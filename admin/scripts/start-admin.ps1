@@ -161,6 +161,9 @@ try {
     Wait-HttpReady -Process $portalProcess -Name '电商作图用户端' -Uri 'http://127.0.0.1:8003/portal/'
     Wait-HttpReady -Process $frontendProcess -Name '若依前端' -Uri 'http://127.0.0.1:8001'
 
+    & (Join-Path $PSScriptRoot 'initialize-admin-secrets.ps1') `
+        -SecretPath $AdminSecretPath -RemoveLegacyAdminPassword
+
     $state = [pscustomobject]@{
         startedAt = (Get-Date).ToUniversalTime().ToString('o')
         node = [pscustomobject]@{ pid = $nodeProcess.Id; name = 'node' }

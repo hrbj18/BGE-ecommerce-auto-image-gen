@@ -99,13 +99,17 @@ if (-not (Test-Path -LiteralPath $processFile)) {
 $processState = Get-Content -LiteralPath $processFile -Raw -Encoding UTF8 | ConvertFrom-Json
 $managedProcessId = [int]$processState.backend.pid
 $managedProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $managedProcessId" -ErrorAction SilentlyContinue
-if (-not $managedProcess -or $managedProcess.Name -notmatch '^javaw?\.exe$' -or
-        [string]$managedProcess.CommandLine -notlike "*$backendJar*") {
-    throw 'The recorded RuoYi backend process could not be verified; refusing to stop it.'
+if ($managedProcess -and $managedProcess.Name -match '^javaw?\.exe$' -and
+        [string]$managedProcess.CommandLine -like "*$backendJar*") {
+    Stop-Process -Id $managedProcessId -Force
+    Wait-BackendPortClosed
 }
-
-Stop-Process -Id $managedProcessId -Force
-Wait-BackendPortClosed
+elseif (Test-LocalPort -Port $backendPort) {
+    throw 'The RuoYi backend port is occupied by an unverified process; refusing to stop it.'
+}
+else {
+    Write-Host 'The previously recorded RuoYi backend is already stopped. Rebuilding it safely.'
+}
 
 $newBackendProcess = $null
 try {
@@ -117,6 +121,8 @@ try {
         -RedirectStandardOutput (Join-Path $logRoot 'ruoyi-backend.out.log') `
         -RedirectStandardError (Join-Path $logRoot 'ruoyi-backend.err.log')
     Wait-BackendReady -Process $newBackendProcess
+    & (Join-Path $PSScriptRoot 'initialize-admin-secrets.ps1') `
+        -SecretPath $AdminSecretPath -RemoveLegacyAdminPassword
     Write-ProcessState -State $processState -BackendProcessId $newBackendProcess.Id
     Write-Host 'RuoYi backend was rebuilt, restarted, and passed its readiness check.'
 }

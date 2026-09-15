@@ -31,7 +31,7 @@ function Get-BgeCredentialStatus {
     }
 
     $invalid = [System.Collections.Generic.List[string]]::new()
-    $secretFields = @('RuoYiTokenSecret', 'LocalWebAccessToken', 'RuoYiAdminPassword')
+    $secretFields = @('RuoYiTokenSecret', 'LocalWebAccessToken')
     if ($Kind -eq 'Infrastructure') {
         $secretFields = @('MySqlPassword', 'RedisPassword')
         foreach ($field in @('MySqlHost', 'MySqlDatabase', 'MySqlUser', 'RedisHost')) {

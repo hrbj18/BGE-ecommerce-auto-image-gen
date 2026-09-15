@@ -49,11 +49,19 @@ test("Windows launcher distinguishes credential failures and never formats secre
     $admin = [pscustomobject]@{
       RuoYiTokenSecret=(ConvertTo-SecureString $fixtureSecret -AsPlainText -Force)
       LocalWebAccessToken=(ConvertTo-SecureString $fixtureSecret -AsPlainText -Force)
-      RuoYiAdminPassword=(ConvertTo-SecureString $fixtureSecret -AsPlainText -Force)
     }
     $admin | Export-Clixml -LiteralPath $file
     if ((Get-BgeCredentialStatus -Path $file -Kind Admin).Status -ne 'ready') { throw 'Admin rejected' }
-    $admin.PSObject.Properties.Remove('RuoYiAdminPassword')
+    $admin | Add-Member -NotePropertyName RuoYiAdminPassword -NotePropertyValue (ConvertTo-SecureString $fixtureSecret -AsPlainText -Force)
+    $admin | Export-Clixml -LiteralPath $file
+    & (Join-Path $env:BGE_TEST_REPO 'admin/scripts/initialize-admin-secrets.ps1') -SecretPath $file
+    $admin = Import-Clixml -LiteralPath $file
+    if ($null -eq $admin.PSObject.Properties['RuoYiAdminPassword']) { throw 'Legacy admin password was removed before backend migration' }
+    & (Join-Path $env:BGE_TEST_REPO 'admin/scripts/initialize-admin-secrets.ps1') -SecretPath $file -RemoveLegacyAdminPassword
+    $admin = Import-Clixml -LiteralPath $file
+    if ($null -ne $admin.PSObject.Properties['RuoYiAdminPassword']) { throw 'Legacy admin password was retained' }
+    if ((Get-BgeCredentialStatus -Path $file -Kind Admin).Status -ne 'ready') { throw 'Migrated admin rejected' }
+    $admin.PSObject.Properties.Remove('LocalWebAccessToken')
     $admin | Export-Clixml -LiteralPath $file
     if ((Get-BgeCredentialStatus -Path $file -Kind Admin).Status -ne 'invalid-schema') { throw 'Missing field accepted' }
     $sourceDir = Join-Path $env:BGE_TEST_DIR 'source'
@@ -61,7 +69,7 @@ test("Windows launcher distinguishes credential failures and never formats secre
     New-Item -ItemType Directory -Path $sourceDir | Out-Null
     $payload.MySqlHost='127.0.0.1'
     $payload | Export-Clixml -LiteralPath (Join-Path $sourceDir 'credentials.clixml')
-    $admin | Add-Member -NotePropertyName RuoYiAdminPassword -NotePropertyValue (ConvertTo-SecureString $fixtureSecret -AsPlainText -Force)
+    $admin | Add-Member -NotePropertyName LocalWebAccessToken -NotePropertyValue (ConvertTo-SecureString $fixtureSecret -AsPlainText -Force)
     $admin | Export-Clixml -LiteralPath (Join-Path $sourceDir 'admin-secrets.clixml')
     $restoreScript = Join-Path $env:BGE_TEST_REPO 'admin/scripts/restore-local-credentials.ps1'
     $restoreReport = Join-Path $env:BGE_TEST_DIR 'restore.json'
