@@ -20,6 +20,8 @@ import com.ruoyi.bge.client.BgeEngineClient.WorkbenchResponse;
 import com.ruoyi.bge.domain.BgeDtos.Asset;
 import com.ruoyi.bge.domain.BgeDtos.Output;
 import com.ruoyi.bge.domain.BgeDtos.TaskDetail;
+import com.ruoyi.bge.points.BgePointService;
+import com.ruoyi.bge.points.BgePointService.Reservation;
 import com.ruoyi.bge.portal.BgePortalOwnershipRepository;
 import com.ruoyi.bge.portal.PortalUserService;
 import com.ruoyi.bge.portal.PortalUserService.PortalProfile;
@@ -56,15 +58,18 @@ public class BgePortalController
     private final BgeReadService readService;
     private final BgePortalOwnershipRepository ownership;
     private final PortalUserService portalUsers;
+    private final BgePointService points;
     private final ObjectMapper objectMapper;
 
     public BgePortalController(BgeEngineClient client, BgeReadService readService,
-            BgePortalOwnershipRepository ownership, PortalUserService portalUsers, ObjectMapper objectMapper)
+            BgePortalOwnershipRepository ownership, PortalUserService portalUsers,
+            BgePointService points, ObjectMapper objectMapper)
     {
         this.client = client;
         this.readService = readService;
         this.ownership = ownership;
         this.portalUsers = portalUsers;
+        this.points = points;
         this.objectMapper = objectMapper;
     }
 
@@ -112,7 +117,9 @@ public class BgePortalController
     {
         PortalProfile user = portalUsers.current();
         requireOwnedImage(user.userId(), taskId);
-        return taskJson(readOwnedTask(taskId));
+        TaskDetail detail = readOwnedTask(taskId);
+        settleIfTerminal(user.userId(), detail);
+        return taskJson(detail);
     }
 
     @GetMapping("/api/jobs/{taskId}")
@@ -120,20 +127,52 @@ public class BgePortalController
     {
         PortalProfile user = portalUsers.current();
         requireOwnedImage(user.userId(), taskId);
-        return taskJson(readOwnedTask(taskId));
+        TaskDetail detail = readOwnedTask(taskId);
+        settleIfTerminal(user.userId(), detail);
+        return taskJson(detail);
     }
 
     @PostMapping(value = "/api/jobs", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ObjectNode createImageJob(MultipartHttpServletRequest request)
     {
         PortalProfile user = portalUsers.current();
-        JsonNode accepted = forwardMultipartJson("/api/jobs", request);
+        String requestKey = request.getHeader("X-Idempotency-Key");
+        String profileId = request.getParameter("generationProfileId");
+        String resolutionId = request.getParameter("imageResolutionId");
+        Reservation reservation = points.reserveGeneration(user.userId(), requestKey,
+                profileId == null || profileId.isBlank() ? "standard-5-8" : profileId,
+                resolutionId == null || resolutionId.isBlank() ? "2k" : resolutionId);
+        JsonNode accepted;
+        try
+        {
+            accepted = forwardMultipartJson("/api/jobs", request);
+        }
+        catch (PortalException exception)
+        {
+            points.releaseSubmission(user.userId(), reservation.chargeId());
+            throw exception;
+        }
+        catch (BgeProxyException exception)
+        {
+            // A 5xx/timeout may mean Node accepted the idempotent request but its
+            // response was lost. Keep the reservation so the same key can safely
+            // recover and bind the original task on the next attempt.
+            if (exception.getStatus().is4xxClientError())
+            {
+                points.releaseSubmission(user.userId(), reservation.chargeId());
+            }
+            throw exception;
+        }
         String jobId = requiredJobId(accepted);
         // The task id is the durable ownership boundary. Output folder names
         // may contain localized characters, so output authorization is derived
         // from an owned task instead of persisting a second identifier.
         ownership.claim(user.userId(), BgePortalOwnershipRepository.IMAGE, jobId, "");
-        return taskJson(readOwnedTask(jobId));
+        points.bindTask(user.userId(), reservation.chargeId(), jobId);
+        ObjectNode result = taskJson(readOwnedTask(jobId));
+        result.put("pointsReserved", reservation.points());
+        result.put("pointsBalance", points.account(user.userId()).balance());
+        return result;
     }
 
     @PostMapping("/api/jobs/{taskId}/cancel")
@@ -142,7 +181,46 @@ public class BgePortalController
         PortalProfile user = portalUsers.current();
         requireOwnedImage(user.userId(), taskId);
         forwardJson("POST", "/api/jobs/" + BgePathPolicy.encode(BgePathPolicy.identifier(taskId)) + "/cancel", request);
-        return taskJson(readOwnedTask(taskId));
+        TaskDetail detail = readOwnedTask(taskId);
+        settleIfTerminal(user.userId(), detail);
+        return taskJson(detail);
+    }
+
+    @PostMapping("/api/jobs/{taskId}/retry")
+    public ObjectNode retryImageJob(@PathVariable String taskId, HttpServletRequest request)
+    {
+        PortalProfile user = portalUsers.current();
+        requireOwnedImage(user.userId(), taskId);
+        TaskDetail before = readOwnedTask(taskId);
+        settleIfTerminal(user.userId(), before);
+        int delivered = deliveredImages(before);
+        Reservation reservation = points.reserveRetry(user.userId(), taskId,
+                before.generationProfileId(), before.imageResolutionId(),
+                before.mainImageCount() + before.detailImageCount(), delivered);
+        try
+        {
+            forwardJson("POST", "/api/jobs/" + BgePathPolicy.encode(BgePathPolicy.identifier(taskId)) + "/retry", request);
+        }
+        catch (PortalException exception)
+        {
+            points.settleTask(user.userId(), taskId, delivered);
+            throw exception;
+        }
+        catch (BgeProxyException exception)
+        {
+            // As with initial submission, a server error can mean the retry was
+            // accepted but its response was lost. Only a definite 4xx rejection
+            // releases the new reservation.
+            if (exception.getStatus().is4xxClientError())
+            {
+                points.settleTask(user.userId(), taskId, delivered);
+            }
+            throw exception;
+        }
+        ObjectNode result = taskJson(readOwnedTask(taskId));
+        result.put("pointsReserved", reservation.points());
+        result.put("pointsBalance", points.account(user.userId()).balance());
+        return result;
     }
 
     @DeleteMapping("/api/tasks/{taskId}")
@@ -151,6 +229,7 @@ public class BgePortalController
         PortalProfile user = portalUsers.current();
         String cleanTaskId = BgePathPolicy.identifier(taskId);
         requireOwnedImage(user.userId(), cleanTaskId);
+        settleIfTerminal(user.userId(), readOwnedTask(cleanTaskId));
         forwardJson("DELETE", "/api/tasks/" + BgePathPolicy.encode(cleanTaskId), request);
         ownership.deleteOwnedImageJob(user.userId(), cleanTaskId);
         ObjectNode result = objectMapper.createObjectNode();
@@ -342,7 +421,9 @@ public class BgePortalController
         {
             try
             {
-                details.add(readService.task(jobId));
+                TaskDetail detail = readService.task(jobId);
+                settleIfTerminal(userId, detail);
+                details.add(detail);
             }
             catch (BgeProxyException exception)
             {
@@ -694,6 +775,21 @@ public class BgePortalController
 
     private boolean isActive(String status)
     {
-        return Set.of("receiving", "submitting", "queued", "running", "canceling").contains(status);
+        return Set.of("receiving", "submitting", "queued", "running", "canceling", "planning",
+                "generating", "generating-main", "generating-detail", "recovering", "recovery-wait").contains(status);
+    }
+
+    private void settleIfTerminal(long userId, TaskDetail detail)
+    {
+        if (detail != null && !isActive(detail.status()))
+        {
+            points.settleTask(userId, detail.id(), deliveredImages(detail));
+        }
+    }
+
+    private int deliveredImages(TaskDetail detail)
+    {
+        if (detail == null || detail.output() == null || detail.output().files() == null) return 0;
+        return detail.output().files().main().size() + detail.output().files().detail().size();
     }
 }

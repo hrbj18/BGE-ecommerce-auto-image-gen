@@ -4,6 +4,7 @@ import {
   ArrowRight,
   CheckCircle2,
   Copy,
+  Coins,
   Download,
   Eye,
   FileText,
@@ -28,6 +29,8 @@ import { captchaImageSource } from "./portal-captcha.js";
 import { planReferenceFileAddition, referenceUploadFeedback } from "./reference-upload.js";
 import { loadReferenceDraft, referenceDraftScope, restoreReferenceDraft, saveReferenceDraft } from "./reference-draft.js";
 import { taskImageCounts } from "./task-progress.js";
+import { normalizeOutputLanguage, outputLanguageDisplayLabel, outputLanguageProfiles } from "../../src/output-language-profiles.mjs";
+import { listPlatformStyleProfiles, normalizeTargetPlatform } from "../../src/platform-style-profiles.mjs";
 import {
   clampPreviewZoom,
   defaultPreviewFit,
@@ -47,6 +50,8 @@ const statusCopy = {
   submitting: "正在提交",
   queued: "已提交",
   running: "生成中",
+  recovering: "自动恢复中",
+  "recovery-wait": "等待自动恢复",
   canceling: "取消中",
   cancelled: "已取消",
   interrupted: "已中断",
@@ -83,14 +88,13 @@ const defaultProductForm = {
   imageAspectRatioProfileId: defaultImageAspectRatioProfileId,
   imageResolutionId: defaultImageResolutionId,
 };
-const platformOptions = [
-  { value: "国内通用", label: "国内通用", summary: "丰富多元素" },
-  { value: "淘宝/天猫", label: "淘宝/天猫", summary: "货架转化" },
-  { value: "Amazon", label: "Amazon", summary: "简洁可信" },
-];
+const fallbackPlatformOptions = listPlatformStyleProfiles().map((profile) => ({
+  value: profile.label,
+  label: profile.label,
+  summary: profile.summary,
+}));
 const languageOptions = [
-  { value: "简体中文", label: "简体中文" },
-  { value: "English", label: "English" },
+  ...outputLanguageProfiles.map(({ label, displayLabel }) => ({ value: label, label: displayLabel })),
 ];
 const historyFilterOptions = [
   { value: "all", label: "全部" },
@@ -128,6 +132,7 @@ export function App() {
   const [outputs, setOutputs] = useState([]);
   const [selectedOutput, setSelectedOutput] = useState(null);
   const portalMode = isPortalMode();
+  const workbenchMode = isWorkbenchMode();
   const [portalUser, setPortalUser] = useState(null);
   const [portalReady, setPortalReady] = useState(!portalMode);
 
@@ -187,6 +192,15 @@ export function App() {
       refreshOutputs(route.outputId).catch(() => setSelectedOutput(null));
     }
   }, [route.page, route.outputId]);
+
+  useEffect(() => {
+    if (portalMode || workbenchMode) return;
+    window.location.replace("http://127.0.0.1:8003/portal/");
+  }, [portalMode, workbenchMode]);
+
+  if (!portalMode && !workbenchMode) {
+    return <PortalLoading />;
+  }
 
   if (portalMode && !portalReady) {
     return <PortalLoading />;
@@ -259,6 +273,7 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
   const [tasksMessage, setTasksMessage] = useState("");
   const [refreshingTasks, setRefreshingTasks] = useState(false);
   const [deletingProduct, setDeletingProduct] = useState("");
+  const [retryingJobId, setRetryingJobId] = useState("");
   const [examples, setExamples] = useState([]);
   const [examplesMessage, setExamplesMessage] = useState("");
   const [toastMessage, setToastMessage] = useState("");
@@ -269,9 +284,12 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
   const [expansionError, setExpansionError] = useState("");
   const [accessTokenValue, setAccessTokenValue] = useState(() => readInternalAccessToken());
   const [accessMode, setAccessMode] = useState("off");
+  const [platformOptions, setPlatformOptions] = useState(fallbackPlatformOptions);
   const [generationProfiles, setGenerationProfiles] = useState(fallbackGenerationProfiles);
   const [imageAspectRatioProfiles, setImageAspectRatioProfiles] = useState(fallbackImageAspectRatioProfiles);
   const [imageResolutionProfiles, setImageResolutionProfiles] = useState(fallbackImageResolutionProfiles);
+  const [pointData, setPointData] = useState(null);
+  const [pointsModalOpen, setPointsModalOpen] = useState(false);
   const pendingIdempotencyKey = useRef("");
   const draftScope = referenceDraftScope(portalUser);
   const selectedGenerationProfile = generationProfiles.find((profile) => profile.id === productForm.generationProfileId)
@@ -283,10 +301,14 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
   const selectedImageAspectRatio = imageAspectRatioProfiles.find((profile) => profile.id === productForm.imageAspectRatioProfileId)
     ?? imageAspectRatioProfiles.find((profile) => profile.id === defaultImageAspectRatioProfileId)
     ?? fallbackImageAspectRatioProfiles[0];
+  const selectedPointPrice = pointData?.prices?.find((price) =>
+    price.generationProfileId === selectedGenerationProfile.id
+      && price.imageResolutionId === selectedImageResolution.id);
+  const pointBalance = Number(pointData?.account?.balance ?? portalUser?.pointsBalance ?? 0);
 
   const hasProductName = Boolean(productForm.productName.trim());
   const hasBriefInput = Boolean(briefText.trim() || hasProductName);
-  const isBusy = ["receiving", "submitting", "queued", "running", "canceling"].includes(runState);
+  const isBusy = ["receiving", "submitting", "queued", "running", "recovering", "recovery-wait", "canceling"].includes(runState);
   const canGenerate = referenceImages.length > 0 && hasProductName && !isBusy;
   const currentStatus = runState === "idle" && referenceImages.length > 0 && hasBriefInput ? "ready" : runState;
   const isExpandingBrief = ["queued", "running"].includes(expansionJob?.status);
@@ -305,7 +327,7 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
     const parts = [];
     if (productForm.productName.trim()) parts.push(productForm.productName.trim());
     else parts.push("请先填写产品名称");
-    parts.push(`${productForm.targetPlatform} / ${productForm.outputLanguage}`);
+    parts.push(`${productForm.targetPlatform} / ${outputLanguageDisplayLabel(productForm.outputLanguage)}`);
     if (referenceImages.length) parts.push(`${referenceImages.length} 张参考图`);
     if (briefText.trim()) parts.push("重点需求已填写");
     if (briefSource === "ai-expanded") parts.push("AI扩写模板");
@@ -351,6 +373,19 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
     referenceImagesRef.current.forEach((image) => URL.revokeObjectURL(image.previewUrl));
   }, []);
 
+  async function refreshPoints() {
+    if (!portalUser) return null;
+    const response = await fetchJson("/points");
+    const data = response.data ?? response;
+    setPointData(data);
+    return data;
+  }
+
+  useEffect(() => {
+    if (!portalUser) return;
+    refreshPoints().catch((pointsError) => setError(pointsError.message));
+  }, [portalUser?.userId]);
+
   useEffect(() => {
     handleRefreshOutputs();
     handleRefreshExamples();
@@ -358,6 +393,13 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
     fetchJson("/health")
       .then((health) => {
         setAccessMode(health.accessMode === "token" ? "token" : "off");
+        if (Array.isArray(health.platformStyleProfiles) && health.platformStyleProfiles.length) {
+          setPlatformOptions(health.platformStyleProfiles.map((profile) => ({
+            value: profile.label,
+            label: profile.label,
+            summary: profile.summary,
+          })));
+        }
         if (Array.isArray(health.generationProfiles) && health.generationProfiles.length) {
           setGenerationProfiles(health.generationProfiles);
         }
@@ -378,7 +420,7 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
   }, [toastMessage]);
 
   useEffect(() => {
-    if (!job?.id || !["receiving", "submitting", "queued", "running", "canceling"].includes(runState)) return undefined;
+    if (!job?.id || !["receiving", "submitting", "queued", "running", "recovering", "recovery-wait", "canceling"].includes(runState)) return undefined;
     const timer = window.setInterval(async () => {
       try {
         const nextJob = await fetchJson(`/api/jobs/${encodeURIComponent(job.id)}`);
@@ -397,8 +439,12 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
           if (nextJob.output) setLiveOutput(nextJob.output);
           await handleRefreshOutputs("作品已生成，可以在已完成作品里查看。");
           await handleRefreshTasks({ silent: true });
+          await refreshPoints().catch(() => undefined);
         }
-        if (["failed", "cancelled", "interrupted"].includes(nextJob.status)) window.clearInterval(timer);
+        if (["failed", "cancelled", "interrupted"].includes(nextJob.status)) {
+          window.clearInterval(timer);
+          await refreshPoints().catch(() => undefined);
+        }
       } catch (pollError) {
         setError(pollError.message);
       }
@@ -777,6 +823,11 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
 
   async function handleGenerate() {
     if (!canGenerate) return;
+    if (portalUser && selectedPointPrice && pointBalance < selectedPointPrice.points) {
+      setError(`积分不足，本次需要 ${selectedPointPrice.points} 积分，当前余额 ${pointBalance}。`);
+      setPointsModalOpen(true);
+      return;
+    }
     setError("");
     setJob({
       id: "",
@@ -816,14 +867,15 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
       form.append("expandBrief", briefSource === "ai-expanded" ? "false" : "true");
       const idempotencyKey = pendingIdempotencyKey.current || createIdempotencyKey();
       pendingIdempotencyKey.current = idempotencyKey;
-      const created = await fetchJson("/api/jobs", { method: "POST", headers: { "X-Idempotency-Key": idempotencyKey }, body: form });
+      const created = await submitImageJobWithRecovery(form, idempotencyKey);
       pendingIdempotencyKey.current = "";
       cachePromptSnapshot(created);
       setJob(created);
       setRunState(created.status);
+      await refreshPoints().catch(() => undefined);
       await handleRefreshTasks({ silent: true });
     } catch (submitError) {
-      if (submitError.statusCode && submitError.statusCode !== 0) pendingIdempotencyKey.current = "";
+      if (submitError.statusCode >= 400 && submitError.statusCode < 500) pendingIdempotencyKey.current = "";
       setRunState("failed");
       setError(submitError.message);
       setJob((current) => current ? { ...current, status: "failed", message: submitError.message } : current);
@@ -841,9 +893,30 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
       setRunState(cancelled.status || "cancelled");
       await handleRefreshTasks({ silent: true });
       await handleRefreshOutputs("任务已停止，已完成图片仍然保留。" );
+      await refreshPoints().catch(() => undefined);
     } catch (cancelError) {
       setError(`取消失败：${cancelError.message}`);
       await handleRefreshTasks({ silent: true });
+    }
+  }
+
+  async function handleRetryJob(taskId) {
+    if (!taskId || retryingJobId) return;
+    setRetryingJobId(taskId);
+    setError("");
+    try {
+      const resumed = await fetchJson(`/api/jobs/${encodeURIComponent(taskId)}/retry`, { method: "POST" });
+      setJob(resumed);
+      setRunState(resumed.status || "recovering");
+      setLiveOutput(resumed.output || null);
+      setToastMessage("任务已恢复，系统只会补齐缺失图片。");
+      await refreshPoints().catch(() => undefined);
+      await handleRefreshTasks({ silent: true });
+    } catch (retryError) {
+      setError(`继续生成失败：${retryError.message}`);
+      await handleRefreshTasks({ silent: true });
+    } finally {
+      setRetryingJobId("");
     }
   }
 
@@ -858,7 +931,13 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
   return (
     <main className="app-shell">
       <section className="workspace">
-        <Header currentStatus={currentStatus} portalUser={portalUser} onPortalLogout={onPortalLogout} />
+        <Header
+          currentStatus={currentStatus}
+          portalUser={portalUser}
+          pointsBalance={pointBalance}
+          onOpenPoints={() => setPointsModalOpen(true)}
+          onPortalLogout={onPortalLogout}
+        />
         {toastMessage ? <div className="toast-banner" role="status" aria-live="polite">{toastMessage}</div> : null}
 
         <div className="layout-grid">
@@ -904,6 +983,7 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
               </div>
               <GenerationOptionControls
                 form={productForm}
+                platformOptions={platformOptions}
                 profiles={generationProfiles}
                 aspectRatioProfiles={imageAspectRatioProfiles}
                 resolutionProfiles={imageResolutionProfiles}
@@ -926,7 +1006,7 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
               </div>
               <button className="generate-button" type="button" disabled={!canGenerate} onClick={handleGenerate}>
                 {isBusy ? <Loader2 size={18} className="spin" /> : <Sparkles size={18} />}
-                {isBusy ? "生成中" : "立即生成"}
+                {isBusy ? "生成中" : selectedPointPrice ? `立即生成 · ${selectedPointPrice.points} 积分` : "立即生成"}
                 <ArrowRight size={18} />
               </button>
               {!isPortalMode() && accessMode === "token" ? (
@@ -972,10 +1052,12 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
             outputsMessage={outputsMessage}
             tasksMessage={tasksMessage}
             deletingProduct={deletingProduct}
+            retryingJobId={retryingJobId}
             examples={examples}
             examplesMessage={examplesMessage}
             onRefreshHistory={() => Promise.all([handleRefreshOutputs(), handleRefreshTasks()])}
             onDeleteRecord={handleDeleteRecord}
+            onRetryJob={handleRetryJob}
             onViewOutput={onViewOutput}
             onImportPrompt={handleImportTaskPrompt}
             onApplyExample={handleApplyExample}
@@ -997,6 +1079,13 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
             onClose={() => setExpansionModalOpen(false)}
           />
         ) : null}
+        {pointsModalOpen ? (
+          <PointsCenterModal
+            data={pointData}
+            onClose={() => setPointsModalOpen(false)}
+            onRefresh={refreshPoints}
+          />
+        ) : null}
         {referenceModalOpen ? (
           <ReferenceManagerModal
             images={referenceImages}
@@ -1013,7 +1102,7 @@ function WorkbenchPage({ outputs, onRefreshOutputs, onDeleteOutput, onDeleteTask
   );
 }
 
-function GenerationOptionControls({ form, profiles, aspectRatioProfiles, resolutionProfiles, onChange }) {
+function GenerationOptionControls({ form, platformOptions, profiles, aspectRatioProfiles, resolutionProfiles, onChange }) {
   const selectedProfile = profiles.find((profile) => profile.id === form.generationProfileId)
     ?? profiles.find((profile) => profile.id === defaultGenerationProfileId)
     ?? fallbackGenerationProfiles[0];
@@ -1157,11 +1246,13 @@ function HistoryRecordsPanel({
   message,
   refreshing,
   deletingProduct,
+  retryingJobId,
   onRefresh,
   onOpenAll,
   onViewOutput,
   onImportPrompt,
   onDeleteRecord,
+  onRetryJob,
 }) {
   const recentRecords = records.slice(0, 6);
   const portalMode = isPortalMode();
@@ -1197,9 +1288,11 @@ function HistoryRecordsPanel({
             <HistoryRecordActions
               record={record}
               deletingProduct={deletingProduct}
+              retryingJobId={retryingJobId}
               onViewOutput={onViewOutput}
               onImportPrompt={onImportPrompt}
               onDeleteRecord={onDeleteRecord}
+              onRetryJob={onRetryJob}
             />
           </article>
         ))}
@@ -1209,10 +1302,11 @@ function HistoryRecordsPanel({
   );
 }
 
-function HistoryRecordActions({ record, deletingProduct, onViewOutput, onImportPrompt, onDeleteRecord }) {
-  const isActive = ["queued", "running", "submitting"].includes(record.status);
+function HistoryRecordActions({ record, deletingProduct, retryingJobId, onViewOutput, onImportPrompt, onDeleteRecord, onRetryJob }) {
+  const isActive = ["queued", "running", "submitting", "recovering", "recovery-wait"].includes(record.status);
   const deleteKey = record.deleteKey || record.id;
   const canDelete = !isActive && Boolean(record.task || record.output || record.outputId);
+  const canRetry = !isActive && record.task?.canRetry !== false && ["failed", "partial", "interrupted", "cancelled"].includes(record.status);
   return (
     <div className="history-record-actions">
       <span className={`task-status-dot status-${record.status}`}>
@@ -1227,6 +1321,12 @@ function HistoryRecordActions({ record, deletingProduct, onViewOutput, onImportP
         <button type="button" onClick={() => onViewOutput(record.outputId)}>
           <Eye size={14} />
           查看成品
+        </button>
+      ) : null}
+      {canRetry ? (
+        <button type="button" disabled={retryingJobId === record.task?.id} onClick={() => onRetryJob(record.task?.id)}>
+          {retryingJobId === record.task?.id ? <Loader2 size={14} className="spin" /> : <RotateCcw size={14} />}
+          {record.status === "partial" ? "补齐缺图" : "继续生成"}
         </button>
       ) : null}
       {canDelete ? (
@@ -1251,10 +1351,12 @@ function HistoryRecordsModal({
   message,
   refreshing,
   deletingProduct,
+  retryingJobId,
   onRefresh,
   onViewOutput,
   onImportPrompt,
   onDeleteRecord,
+  onRetryJob,
   onClose,
 }) {
   const [query, setQuery] = useState("");
@@ -1347,7 +1449,7 @@ function HistoryRecordsModal({
                 <div className="history-modal-line">
                   <strong title={record.productName}>{record.productName}</strong>
                   <span className={`task-status-dot status-${record.status}`}>
-                    {["queued", "running", "submitting"].includes(record.status) ? <Loader2 size={13} className="spin" /> : null}
+                    {["queued", "running", "submitting", "recovering", "recovery-wait"].includes(record.status) ? <Loader2 size={13} className="spin" /> : null}
                     {record.statusLabel}
                   </span>
                 </div>
@@ -1355,7 +1457,7 @@ function HistoryRecordsModal({
                   <span>生成时间：{record.timeLabel || "未知"}</span>
                   {record.referenceCount ? <span>{record.referenceCount} 张参考图</span> : null}
                   {record.targetPlatform ? <span>平台：{record.targetPlatform}</span> : null}
-                  {record.outputLanguage ? <span>语言：{record.outputLanguage}</span> : null}
+                  {record.outputLanguage ? <span>语言：{outputLanguageDisplayLabel(record.outputLanguage)}</span> : null}
                   {record.imageResolutionLabel ? <span>清晰度：{record.imageResolutionLabel}</span> : null}
                   {record.promptAvailable ? <span>提示词可导入</span> : <span>无完整提示词</span>}
                 </div>
@@ -1367,9 +1469,11 @@ function HistoryRecordsModal({
               <HistoryRecordActions
                 record={record}
                 deletingProduct={deletingProduct}
+                retryingJobId={retryingJobId}
                 onViewOutput={onViewOutput}
                 onImportPrompt={onImportPrompt}
                 onDeleteRecord={onDeleteRecord}
+                onRetryJob={onRetryJob}
               />
             </article>
           ))}
@@ -1740,7 +1844,7 @@ function BriefExpansionModal({
             <div className="snapshot-meta">
               {snapshot?.productForm?.productName ? <span>产品：{snapshot.productForm.productName}</span> : null}
               {snapshot?.productForm?.targetPlatform ? <span>平台：{snapshot.productForm.targetPlatform}</span> : null}
-              {snapshot?.productForm?.outputLanguage ? <span>语言：{snapshot.productForm.outputLanguage}</span> : null}
+              {snapshot?.productForm?.outputLanguage ? <span>语言：{outputLanguageDisplayLabel(snapshot.productForm.outputLanguage)}</span> : null}
               {snapshot?.productForm?.imageAspectRatioProfileId ? <span>比例：{(fallbackImageAspectRatioProfiles.find((profile) => profile.id === snapshot.productForm.imageAspectRatioProfileId)?.summary || snapshot.productForm.imageAspectRatioProfileId).replaceAll(" ", "")}</span> : null}
               {snapshot?.productForm?.imageResolutionId ? <span>清晰度：{normalizeUiImageResolution(snapshot.productForm.imageResolutionId).toUpperCase()}</span> : null}
               <span>{referenceImages.length} 张产品图</span>
@@ -1860,10 +1964,12 @@ function ShowcasePanel({
   outputsMessage,
   tasksMessage,
   deletingProduct,
+  retryingJobId,
   examples,
   examplesMessage,
   onRefreshHistory,
   onDeleteRecord,
+  onRetryJob,
   onViewOutput,
   onImportPrompt,
   onApplyExample,
@@ -1876,7 +1982,7 @@ function ShowcasePanel({
   const [exampleBusyId, setExampleBusyId] = useState("");
   const [exampleError, setExampleError] = useState("");
   const portalMode = isPortalMode();
-  const isBusy = ["receiving", "submitting", "queued", "running", "canceling"].includes(runState);
+  const isBusy = ["receiving", "submitting", "queued", "running", "recovering", "recovery-wait", "canceling"].includes(runState);
   const isDone = ["done", "partial"].includes(runState) && Boolean(job?.productName);
   const displayMode = isBusy ? "task" : mode === "completed" && !outputs.length ? "examples" : mode;
 
@@ -1988,7 +2094,7 @@ function ShowcasePanel({
       </div>
 
       {displayMode === "task" ? (
-        <TaskProgressBoard job={job} liveOutput={liveOutput} onViewOutput={onViewOutput} />
+        <TaskProgressBoard job={job} liveOutput={liveOutput} retrying={retryingJobId === job?.id} onViewOutput={onViewOutput} onRetryJob={onRetryJob} />
       ) : displayMode === "completed" ? (
         <ShowcaseStage
           asset={currentAsset}
@@ -2014,11 +2120,13 @@ function ShowcasePanel({
         message={tasksMessage || outputsMessage}
         refreshing={refreshingOutputs || refreshingTasks}
         deletingProduct={deletingProduct}
+        retryingJobId={retryingJobId}
         onRefresh={onRefreshHistory}
         onOpenAll={() => setHistoryModalOpen(true)}
         onViewOutput={onViewOutput}
         onImportPrompt={onImportPrompt}
         onDeleteRecord={onDeleteRecord}
+        onRetryJob={onRetryJob}
       />
 
       {historyModalOpen ? (
@@ -2027,10 +2135,12 @@ function ShowcasePanel({
           message={tasksMessage || outputsMessage}
           refreshing={refreshingOutputs || refreshingTasks}
           deletingProduct={deletingProduct}
+          retryingJobId={retryingJobId}
           onRefresh={onRefreshHistory}
           onViewOutput={onViewOutput}
           onImportPrompt={onImportPrompt}
           onDeleteRecord={onDeleteRecord}
+          onRetryJob={onRetryJob}
           onClose={() => setHistoryModalOpen(false)}
         />
       ) : null}
@@ -2186,7 +2296,7 @@ function ExamplePreviewModal({ example, busy, onClose, onApply }) {
   );
 }
 
-function TaskProgressBoard({ job, liveOutput, onViewOutput }) {
+function TaskProgressBoard({ job, liveOutput, retrying, onViewOutput, onRetryJob }) {
   const main = liveOutput?.files?.main ?? [];
   const detail = liveOutput?.files?.detail ?? [];
   const progress = job?.progress || null;
@@ -2208,6 +2318,8 @@ function TaskProgressBoard({ job, liveOutput, onViewOutput }) {
   const canViewOutput = Boolean(job?.output?.id || job?.outputId || job?.outputFolderName || job?.productName)
     && (isComplete || ["done", "partial"].includes(taskStatus));
   const isTerminalFailure = ["failed", "cancelled", "interrupted"].includes(taskStatus);
+  const canRetry = job?.id && job?.recovery?.lastClassification !== "ambiguous"
+    && ["failed", "partial", "interrupted", "cancelled"].includes(taskStatus);
 
   return (
     <section className="task-board">
@@ -2223,7 +2335,15 @@ function TaskProgressBoard({ job, liveOutput, onViewOutput }) {
             进入详情页
           </button>
         ) : isTerminalFailure ? (
-          <span className="task-pill">{statusCopy[taskStatus] || "任务已停止"}</span>
+          <div className="task-board-actions">
+            <span className="task-pill">{statusCopy[taskStatus] || "任务已停止"}</span>
+            {canRetry ? (
+              <button className="secondary-button" type="button" disabled={retrying} onClick={() => onRetryJob(job.id)}>
+                {retrying ? <Loader2 size={16} className="spin" /> : <RotateCcw size={16} />}
+                继续生成
+              </button>
+            ) : null}
+          </div>
         ) : (
           <span className="task-pill"><Loader2 size={15} className="spin" />生成中</span>
         )}
@@ -3033,7 +3153,7 @@ function formatBriefDiagnostic(diagnostics, fallbackReason) {
 
 function historyStatus(task, output) {
   if (task?.filesDeletedAt && !output) return "deleted";
-  if (["receiving", "submitting", "queued", "running", "canceling"].includes(task?.status)) return task.status;
+  if (["receiving", "submitting", "queued", "running", "recovering", "recovery-wait", "canceling"].includes(task?.status)) return task.status;
   if (["failed", "cancelled", "interrupted"].includes(task?.status)) return task.status;
   const outputStatus = String(output?.status || task?.output?.status || "");
   if (outputStatus === "部分失败") return "partial";
@@ -3050,7 +3170,7 @@ function historyStatusLabel(status, output) {
 }
 
 function historyStatusBucket(status) {
-  if (["receiving", "submitting", "queued", "running", "canceling"].includes(status)) return "active";
+  if (["receiving", "submitting", "queued", "running", "recovering", "recovery-wait", "canceling"].includes(status)) return "active";
   if (status === "done") return "done";
   if (status === "partial") return "partial";
   if (["failed", "cancelled", "interrupted"].includes(status)) return "failed";
@@ -3129,6 +3249,123 @@ function sanitizeCaseTemplate(templateText) {
     .trim();
 }
 
+function PointsCenterModal({ data, onClose, onRefresh }) {
+  const packages = data?.rechargePackages ?? [50, 100, 300, 500];
+  const [selectedPackage, setSelectedPackage] = useState(packages[0] ?? 50);
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const prices = data?.prices ?? [];
+  const profileRows = [...new Map(prices.map((item) => [item.generationProfileId, item])).values()];
+
+  const submitRecharge = async () => {
+    setSubmitting(true);
+    setMessage("");
+    setError("");
+    try {
+      await fetchJson("/points/recharges", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ points: selectedPackage, note }),
+      });
+      await onRefresh();
+      setNote("");
+      setMessage(`${selectedPackage} 积分充值申请已提交，等待管理员审核。`);
+    } catch (requestError) {
+      setError(requestError.message || "充值申请提交失败。");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="modal-layer points-layer" role="dialog" aria-modal="true" aria-label="积分中心">
+      <section className="points-modal">
+        <header className="modal-header">
+          <div>
+            <p className="section-kicker">账户</p>
+            <h2>积分中心</h2>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭积分中心"><X size={20} /></button>
+        </header>
+        <div className="points-modal-body">
+          <section className="points-balance-band">
+            <div>
+              <span>当前余额</span>
+              <strong>{data?.account?.balance ?? 0}</strong>
+              <small>积分</small>
+            </div>
+            <p>新账号已赠送 {30} 体验积分</p>
+          </section>
+
+          <section className="points-section">
+            <h3>套图价格</h3>
+            <div className="points-price-table">
+              <div className="points-price-row points-price-head"><span>套图</span><span>1K</span><span>2K</span><span>4K</span></div>
+              {profileRows.map((profile) => (
+                <div className="points-price-row" key={profile.generationProfileId}>
+                  <span>{profile.profileLabel}</span>
+                  {["1k", "2k", "4k"].map((resolution) => (
+                    <strong key={resolution}>{prices.find((item) => item.generationProfileId === profile.generationProfileId && item.imageResolutionId === resolution)?.points ?? "-"}</strong>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="points-section">
+            <h3>充值积分</h3>
+            <div className="recharge-packages">
+              {packages.map((points) => (
+                <button className={selectedPackage === points ? "active" : ""} type="button" key={points} onClick={() => setSelectedPackage(points)}>
+                  <Coins size={17} /> {points}
+                </button>
+              ))}
+            </div>
+            <div className="recharge-submit-row">
+              <input value={note} maxLength={200} placeholder="备注（选填）" onChange={(event) => setNote(event.target.value)} />
+              <button className="generate-button compact" type="button" disabled={submitting} onClick={submitRecharge}>
+                {submitting ? <Loader2 className="spin" size={17} /> : <Coins size={17} />}
+                提交充值申请
+              </button>
+            </div>
+            {message ? <p className="portal-access-message">{message}</p> : null}
+            {error ? <p className="error-text">{error}</p> : null}
+          </section>
+
+          <section className="points-section">
+            <h3>最近流水</h3>
+            <div className="points-ledger-list">
+              {(data?.ledger ?? []).map((item) => (
+                <div key={item.id}>
+                  <span><strong>{item.description}</strong><small>{formatDateTime(item.createdAt)}</small></span>
+                  <b className={item.change >= 0 ? "credit" : "debit"}>{item.change > 0 ? "+" : ""}{item.change}</b>
+                </div>
+              ))}
+              {!data?.ledger?.length ? <p className="empty-inline">暂无积分流水</p> : null}
+            </div>
+          </section>
+
+          {(data?.recharges ?? []).length ? (
+            <section className="points-section">
+              <h3>充值记录</h3>
+              <div className="points-ledger-list">
+                {data.recharges.map((item) => (
+                  <div key={item.id}>
+                    <span><strong>充值 {item.points} 积分</strong><small>{formatDateTime(item.requestedAt)}</small></span>
+                    <b>{item.status === "pending" ? "待审核" : item.status === "approved" ? "已到账" : "未通过"}</b>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function PortalLoading() {
   return (
     <main className="portal-access-shell">
@@ -3186,7 +3423,7 @@ function PortalAccessPage({ onAuthenticated }) {
           method: "POST",
           body: JSON.stringify({ ...form, uuid: captcha.uuid }),
         });
-        setMessage("账号已创建。请使用刚设置的用户名和密码登录。");
+        setMessage("账号已创建，30 体验积分已到账。请使用刚设置的用户名和密码登录。");
         setMode("login");
         setForm((current) => ({ ...current, password: "", confirmPassword: "", code: "" }));
         await refreshCaptcha();
@@ -3274,17 +3511,21 @@ function PortalAccessPage({ onAuthenticated }) {
   );
 }
 
-function PortalUserBar({ user, onLogout }) {
+function PortalUserBar({ user, pointsBalance, onOpenPoints, onLogout }) {
   if (!user) return null;
   return (
     <div className="portal-user-bar">
       <span title={user.username}>{user.nickName || user.username}</span>
+      <button className="portal-points-button" type="button" onClick={onOpenPoints} title="积分中心">
+        <Coins size={15} />
+        {pointsBalance} 积分
+      </button>
       <button type="button" onClick={onLogout}>退出</button>
     </div>
   );
 }
 
-function Header({ currentStatus, portalUser, onPortalLogout }) {
+function Header({ currentStatus, portalUser, pointsBalance, onOpenPoints, onPortalLogout }) {
   return (
     <header className="topbar">
       <div className="brand-mark">
@@ -3295,9 +3536,16 @@ function Header({ currentStatus, portalUser, onPortalLogout }) {
         <h1>本地商品图工作台</h1>
       </div>
       <div className="header-actions">
-        {portalUser ? <PortalUserBar user={portalUser} onLogout={onPortalLogout} /> : null}
+        {portalUser ? (
+          <PortalUserBar
+            user={portalUser}
+            pointsBalance={pointsBalance}
+            onOpenPoints={onOpenPoints}
+            onLogout={onPortalLogout}
+          />
+        ) : null}
         <div className={`status-pill status-${currentStatus}`}>
-          {["receiving", "submitting", "queued", "running", "canceling"].includes(currentStatus) ? <Loader2 size={16} className="spin" /> : <CheckCircle2 size={16} />}
+          {["receiving", "submitting", "queued", "running", "recovering", "recovery-wait", "canceling"].includes(currentStatus) ? <Loader2 size={16} className="spin" /> : <CheckCircle2 size={16} />}
           {statusCopy[currentStatus] || currentStatus}
         </div>
       </div>
@@ -3328,17 +3576,11 @@ function useHashRoute() {
 
 function normalizeUiPlatform(value) {
   const clean = String(value || "").trim();
-  if (/amazon|亚马逊/i.test(clean)) return "Amazon";
-  if (/淘宝|天猫|tmall|taobao/i.test(clean)) return "淘宝/天猫";
-  if (/国内|通用/i.test(clean)) return "国内通用";
-  return platformOptions.some((option) => option.value === clean) ? clean : defaultProductForm.targetPlatform;
+  return normalizeTargetPlatform(clean, defaultProductForm.targetPlatform);
 }
 
 function normalizeUiLanguage(value) {
-  const clean = String(value || "").trim();
-  if (/english|英文|英语/i.test(clean)) return "English";
-  if (/中文|简体|chinese|zh/i.test(clean)) return "简体中文";
-  return languageOptions.some((option) => option.value === clean) ? clean : defaultProductForm.outputLanguage;
+  return normalizeOutputLanguage(value, defaultProductForm.outputLanguage);
 }
 
 function normalizeUiImageResolution(value) {
@@ -3376,11 +3618,35 @@ async function fetchJson(url, options) {
   return data;
 }
 
+async function submitImageJobWithRecovery(form, idempotencyKey) {
+  const retryDelays = [0, 800, 2000];
+  let lastError;
+  for (const delay of retryDelays) {
+    if (delay) await new Promise((resolve) => window.setTimeout(resolve, delay));
+    try {
+      return await fetchJson("/api/jobs", {
+        method: "POST",
+        headers: { "X-Idempotency-Key": idempotencyKey },
+        body: form,
+      });
+    } catch (error) {
+      lastError = error;
+      const status = Number(error?.statusCode ?? 0);
+      if (!(status === 0 || status === 502 || status === 503 || status === 504)) throw error;
+    }
+  }
+  throw lastError;
+}
+
 const internalAccessTokenKey = "bge-local-web-access-token";
 const portalAccessTokenKey = "bge-portal-access-token";
 
 function isPortalMode() {
   return typeof window !== "undefined" && window.location.pathname.startsWith("/portal");
+}
+
+function isWorkbenchMode() {
+  return typeof window !== "undefined" && window.location.pathname.startsWith("/workbench");
 }
 
 function workbenchApiUrl(url) {

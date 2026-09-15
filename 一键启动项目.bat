@@ -6,7 +6,7 @@ if not exist "%POWERSHELL_EXE%" (
   pause
   exit /b 1
 )
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "admin\scripts\start-user-portal.ps1" -EntryUri "http://127.0.0.1:8001/"
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "admin\scripts\start-user-portal.ps1" -OpenBoth
 if errorlevel 1 (
   echo.
   echo RuoYi startup failed. Read the PowerShell error above and .local-web\ruoyi\logs.
@@ -14,6 +14,7 @@ if errorlevel 1 (
   exit /b 1
 )
 echo.
-echo RuoYi admin page opened in your browser.
+echo Admin login opened: http://127.0.0.1:8001/
+echo User login opened: http://127.0.0.1:8003/portal/
 ping.exe 127.0.0.1 -n 4 >nul 2>nul
 exit /b 0

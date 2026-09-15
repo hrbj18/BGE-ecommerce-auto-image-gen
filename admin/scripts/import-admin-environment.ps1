@@ -58,8 +58,10 @@ foreach ($required in @($dbHost, $dbPort, $dbName, $dbUser, $dbPassword, $redisH
 $env:RUOYI_DB_URL = "jdbc:mysql://${dbHost}:${dbPort}/${dbName}?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=GMT%2B8"
 $env:RUOYI_DB_USERNAME = $dbUser
 $env:RUOYI_DB_PASSWORD = $dbPassword
+$env:BGE_RUOYI_MYSQL_PORT = $dbPort
 $env:RUOYI_REDIS_HOST = $redisHost
 $env:RUOYI_REDIS_PORT = $redisPort
+$env:BGE_RUOYI_REDIS_PORT = $redisPort
 $env:RUOYI_REDIS_DATABASE = '1'
 $env:RUOYI_REDIS_PASSWORD = $redisPassword
 $env:RUOYI_TOKEN_SECRET = $tokenSecret

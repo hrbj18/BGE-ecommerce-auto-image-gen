@@ -1,3 +1,5 @@
+import { outputLanguageProfile, usesEnglishLanguageBaseline } from "../src/output-language-profiles.mjs";
+
 const genericBriefPhrases = [
   "商品主体清晰，第一眼看懂品类和核心价值",
   "多场景展示真实使用理由",
@@ -212,16 +214,17 @@ export function extractUserSellingPointSeeds(rawBriefText = "") {
 }
 
 export function inferBriefSellingPoints({ productName = "", rawBriefText = "", productImageAnalysis = "", outputLanguage = "" } = {}) {
+  const baselineLanguage = usesEnglishLanguageBaseline(outputLanguage) ? "English" : "简体中文";
   const identity = inferProductIdentity({ productName, rawBriefText, productImageAnalysis });
   const userSeeds = filterSeedsForIdentity(extractUserSellingPointSeeds(rawBriefText), identity);
   const hints = extractProductHintSeeds(identity, `${productName}\n${productImageAnalysis}\n${userSeeds.join("\n")}`);
   const points = uniqueNonEmpty([...userSeeds, ...hints])
-    .map((seed) => upgradeSellingPoint(seed, identity, outputLanguage))
+    .map((seed) => upgradeSellingPoint(seed, identity, baselineLanguage))
     .filter(Boolean);
-  const rawFallbackPoints = outputLanguage === "English"
+  const rawFallbackPoints = baselineLanguage === "English"
     ? identity.profile.fallbackPointsEn || identity.profile.fallbackPoints
     : identity.profile.fallbackPoints;
-  const fallbackPoints = outputLanguage === "English"
+  const fallbackPoints = baselineLanguage === "English"
     ? rawFallbackPoints.map((point) => upgradeEnglishPoint(point, identity)).filter(Boolean)
     : rawFallbackPoints;
   const supplemented = uniqueNonEmpty([...points, ...fallbackPoints]);
@@ -239,6 +242,7 @@ function filterSeedsForIdentity(seeds, identity) {
 }
 
 export function buildConcreteBriefSections({ productName = "", visibleProductName = "", sellingPoints = [], rawBriefText = "", productImageAnalysis = "", outputLanguage = "", generationProfile = null } = {}) {
+  const baselineLanguage = usesEnglishLanguageBaseline(outputLanguage) ? "English" : "简体中文";
   const identity = inferProductIdentity({ productName: `${productName}\n${visibleProductName}`, rawBriefText, productImageAnalysis });
   const points = filterSeedsForIdentity(uniqueNonEmpty(sellingPoints), identity).slice(0, 12);
   const seeds = filterSeedsForIdentity(extractUserSellingPointSeeds(rawBriefText), identity);
@@ -246,18 +250,18 @@ export function buildConcreteBriefSections({ productName = "", visibleProductNam
   const detailImageCount = Math.max(0, Math.floor(Number(generationProfile?.detailImageCount) || 8));
   return {
     extractedPoints: seeds.map((seed) => `- ${seed}`).join("\n") || "- 未填写具体卖点，已仅根据当前产品图补充基础展示方向。",
-    evidence: buildEvidenceList(points, identity, outputLanguage).map((item) => `- ${item}`).join("\n"),
-    risks: buildRiskList(rawBriefText, identity, outputLanguage).map((item) => `- ${item}`).join("\n"),
+    evidence: buildEvidenceList(points, identity, baselineLanguage).map((item) => `- ${item}`).join("\n"),
+    risks: buildRiskList(rawBriefText, identity, baselineLanguage).map((item) => `- ${item}`).join("\n"),
     proofMatrix: buildProofMatrixText({ productName, visibleProductName, sellingPoints: points, rawBriefText, productImageAnalysis, outputLanguage }),
-    mainPlan: buildPlan(points, identity, mainImageCount, "主图", outputLanguage, 0),
-    detailPlan: buildPlan(points, identity, detailImageCount, "详情页", outputLanguage, mainImageCount),
+    mainPlan: buildPlan(points, identity, mainImageCount, "主图", baselineLanguage, 0),
+    detailPlan: buildPlan(points, identity, detailImageCount, "详情页", baselineLanguage, mainImageCount),
   };
 }
 
 export function buildProofMatrixText({ productName = "", visibleProductName = "", sellingPoints = [], rawBriefText = "", productImageAnalysis = "", outputLanguage = "" } = {}) {
   const identity = inferProductIdentity({ productName: `${productName}\n${visibleProductName}`, rawBriefText: `${rawBriefText}\n${sellingPoints.join("\n")}`, productImageAnalysis });
   const profile = identity.profile;
-  if (outputLanguage === "English") {
+  if (usesEnglishLanguageBaseline(outputLanguage)) {
     const englishProfile = englishProfileText(profile);
     return [
       `- Product-form chain: ${englishProfile.forms.join(" -> ")}`,
@@ -309,7 +313,12 @@ export function briefExpansionQualityIssues(content = "", { rawBriefText = "", p
   if (numberedPlanCount(detailPlan) !== expectedDetailImageCount) issues.push(`详情页规划不是完整 ${expectedDetailImageCount} 条`);
   if (hasRepeatedGenericPlanScene(mainPlan) || hasRepeatedGenericPlanScene(detailPlan)) issues.push("逐屏场景仍重复使用同一通用构图");
   const language = outputLanguage || extractSimpleField(text, ["输出语言", "output language"]);
-  if (language === "English" && parsedPoints.some((point) => containsCjk(point))) issues.push("English 模式的核心卖点仍含中文营销句");
+  const languageProfile = outputLanguageProfile(language);
+  if (usesEnglishLanguageBaseline(language)
+    && languageProfile?.id !== "ja"
+    && parsedPoints.some((point) => containsCjk(point))) {
+    issues.push(`${language} 模式的核心卖点仍含中文营销句`);
+  }
   return uniqueNonEmpty(issues);
 }
 

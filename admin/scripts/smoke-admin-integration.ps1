@@ -16,8 +16,6 @@ $database = $BgeRuoYiDatabaseName
 $runtimeRoot = Join-Path $repositoryRoot '.local-web\ruoyi'
 $processFile = Join-Path $runtimeRoot 'processes.json'
 $logRoot = Join-Path $runtimeRoot 'logs'
-$adminSecrets = Import-Clixml -LiteralPath $AdminSecretPath
-$adminPassword = ConvertTo-PlainSecret $adminSecrets.RuoYiAdminPassword
 $previousMySqlPassword = $env:MYSQL_PWD
 $previousRedisCliAuth = $env:REDISCLI_AUTH
 $env:MYSQL_PWD = $env:RUOYI_DB_PASSWORD
@@ -34,6 +32,8 @@ $operatorUserId = $null
 $commonUserId = $null
 $portalUserIdA = $null
 $portalUserIdB = $null
+$acceptanceAdminUserId = $null
+$acceptanceAdminRoleId = $null
 $portalMappedTaskId = $null
 $nodeWasStopped = $false
 $nodeWasRestarted = $false
@@ -44,6 +44,11 @@ $operatorUserName = "bgeo_$suffix"
 $commonUserName = "bgec_$suffix"
 $portalUserNameA = "bgepa_$suffix"
 $portalUserNameB = "bgepb_$suffix"
+$acceptanceAdminUserName = "bgeadm_$suffix"
+$passwordBytes = New-Object byte[] 18
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($passwordBytes)
+$acceptancePassword = [Convert]::ToBase64String($passwordBytes)
+[Array]::Clear($passwordBytes, 0, $passwordBytes.Length)
 $summary = [ordered]@{
     loopbackListeners = $false
     redisReady = $false
@@ -51,6 +56,13 @@ $summary = [ordered]@{
     workbenchFrontendReady = $false
     portalFrontendReady = $false
     adminLogin = $false
+    accountLevelsReady = $false
+    accountLevelFilter = $false
+    roleManagementHidden = $false
+    pointAdminOverview = $false
+    pointAdminLists = $false
+    pointAdminPriceTable = $false
+    pointAdminReconciliation = $false
     dynamicBgeMenu = $false
     adminTaskList = $false
     taskCount = 0
@@ -66,6 +78,11 @@ $summary = [ordered]@{
     unrelatedRoleBgeDenied = $false
     portalRegistration = $false
     portalLogin = $false
+    portalSecondLogin = $false
+    portalWelcomePoints = $false
+    portalWelcomeOnce = $false
+    portalRechargeRequest = $false
+    portalRechargeApproved = $false
     portalNoAdminMenu = $false
     portalExamplesRead = $false
     portalOwnTaskVisible = $false
@@ -236,7 +253,7 @@ function Login-RuoYi {
         uuid = ''
     }
     if ([int]$response.code -ne 200 -or [string]::IsNullOrWhiteSpace([string]$response.token)) {
-        throw '若依登录验收失败。'
+        throw "若依登录验收失败（$UserName）：$([string]$response.msg)"
     }
     return [string]$response.token
 }
@@ -293,6 +310,16 @@ function Test-ContainsWorkbenchRouter {
     foreach ($node in @($Nodes)) {
         if ([string]$node.meta.link -eq 'http://127.0.0.1:8001/workbench/') { return $true }
         if ($null -ne $node.children -and (Test-ContainsWorkbenchRouter -Nodes @($node.children))) { return $true }
+    }
+    return $false
+}
+
+function Test-ContainsRoleRouter {
+    param([object[]]$Nodes)
+
+    foreach ($node in @($Nodes)) {
+        if ([string]$node.path -eq 'role') { return $true }
+        if ($null -ne $node.children -and (Test-ContainsRoleRouter -Nodes @($node.children))) { return $true }
     }
     return $false
 }
@@ -358,7 +385,7 @@ try {
     $summary.frontendReady = $front.StatusCode -eq 200
     $workbenchFront = Invoke-WebRequest -Uri 'http://127.0.0.1:8001/workbench/' -UseBasicParsing -TimeoutSec 5
     $summary.workbenchFrontendReady = $workbenchFront.StatusCode -eq 200
-    $portalFront = Invoke-WebRequest -Uri 'http://127.0.0.1:8001/portal/' -UseBasicParsing -TimeoutSec 5
+    $portalFront = Invoke-WebRequest -Uri 'http://127.0.0.1:8003/portal/' -UseBasicParsing -TimeoutSec 5
     $summary.portalFrontendReady = $portalFront.StatusCode -eq 200 -and $portalFront.Content -match 'root'
 
     try {
@@ -378,24 +405,58 @@ try {
     }
     Set-CaptchaValue -Value 'false'
 
-    $adminToken = Login-RuoYi -UserName 'admin' -Password $adminPassword
+    Register-Portal -UserName $acceptanceAdminUserName -NickName 'Acceptance Admin' -Password $acceptancePassword
+    $acceptanceAdminUserId = [long](Invoke-MySqlQuery "SELECT user_id FROM sys_user WHERE user_name = '$acceptanceAdminUserName' AND create_by = 'portal-register' LIMIT 1;" | Select-Object -First 1)
+    $acceptanceAdminRoleId = [long](Invoke-MySqlQuery "INSERT INTO sys_role (role_name,role_key,role_sort,data_scope,menu_check_strictly,dept_check_strictly,status,del_flag,create_by,create_time,remark) SELECT 'Acceptance Admin','bge_acceptance_$suffix',99,data_scope,menu_check_strictly,dept_check_strictly,'0','0','acceptance',NOW(),'temporary acceptance role' FROM sys_role WHERE role_key='admin' AND del_flag='0' LIMIT 1; SELECT LAST_INSERT_ID();" | Select-Object -Last 1)
+    if ($acceptanceAdminUserId -le 0 -or $acceptanceAdminRoleId -le 0) {
+        throw '无法创建临时验收管理员。'
+    }
+    [void](Invoke-MySqlQuery "DELETE FROM sys_user_role WHERE user_id=$acceptanceAdminUserId; INSERT INTO sys_user_role (user_id,role_id) VALUES ($acceptanceAdminUserId,$acceptanceAdminRoleId); INSERT INTO sys_role_menu (role_id,menu_id) SELECT $acceptanceAdminRoleId,menu_id FROM sys_menu;")
+    $adminToken = Login-RuoYi -UserName $acceptanceAdminUserName -Password $acceptancePassword
     $summary.adminLogin = $true
+
+    $accountInfo = Invoke-RuoYiJson -Method GET -Path '/system/user/' -Token $adminToken
+    $accountRoleKeys = @($accountInfo.roles | ForEach-Object { [string]$_.roleKey })
+    $expectedAssignableRoleKeys = @('bge_portal_user', 'bge_customer', 'bge_priority_customer', 'bge_viewer', 'bge_operator')
+    $fixedRoleCount = [int](Invoke-MySqlQuery "SELECT COUNT(*) FROM sys_role WHERE role_key IN ('bge_portal_user','bge_customer','bge_priority_customer','bge_viewer','bge_operator','admin') AND status='0' AND del_flag='0';" | Select-Object -First 1)
+    $summary.accountLevelsReady = [int]$accountInfo.code -eq 200 -and $fixedRoleCount -eq 6 -and `
+        @($expectedAssignableRoleKeys | Where-Object { $_ -notin $accountRoleKeys }).Count -eq 0
+    $adminRouters = Invoke-RuoYiJson -Method GET -Path '/getRouters' -Token $adminToken
+    $summary.roleManagementHidden = [int]$adminRouters.code -eq 200 -and -not (Test-ContainsRoleRouter -Nodes @($adminRouters.data))
+
+    $pointSummary = Invoke-RuoYiJson -Method GET -Path '/bge/points/summary' -Token $adminToken
+    $pointAccounts = Invoke-RuoYiJson -Method GET -Path '/bge/points/users?pageNum=1&pageSize=5' -Token $adminToken
+    $pointLedger = Invoke-RuoYiJson -Method GET -Path '/bge/points/ledger?pageNum=1&pageSize=5' -Token $adminToken
+    $pointCharges = Invoke-RuoYiJson -Method GET -Path '/bge/points/charges?pageNum=1&pageSize=5' -Token $adminToken
+    $pointRecharges = Invoke-RuoYiJson -Method GET -Path '/bge/points/recharges?pageNum=1&pageSize=5' -Token $adminToken
+    $pointPrices = Invoke-RuoYiJson -Method GET -Path '/bge/points/prices' -Token $adminToken
+    $pointPriceHistory = Invoke-RuoYiJson -Method GET -Path '/bge/points/price-history' -Token $adminToken
+    $pointReconciliation = Invoke-RuoYiJson -Method GET -Path '/bge/points/reconciliation' -Token $adminToken
+    $summary.pointAdminOverview = [int]$pointSummary.code -eq 200 -and $null -ne $pointSummary.data.accountCount
+    $summary.pointAdminLists = [int]$pointAccounts.code -eq 200 -and [int]$pointLedger.code -eq 200 -and `
+        [int]$pointCharges.code -eq 200 -and [int]$pointRecharges.code -eq 200 -and `
+        $null -ne $pointAccounts.data.total -and $null -ne $pointLedger.data.total -and `
+        $null -ne $pointCharges.data.total -and $null -ne $pointRecharges.data.total
+    $summary.pointAdminPriceTable = [int]$pointPrices.code -eq 200 -and @($pointPrices.data).Count -eq 12 -and `
+        [int]$pointPriceHistory.code -eq 200
+    $summary.pointAdminReconciliation = [int]$pointReconciliation.code -eq 200
 
     $viewerRoleId = [long](Invoke-MySqlQuery "SELECT role_id FROM sys_role WHERE role_key = 'bge_viewer' AND status = '0' AND del_flag = '0' LIMIT 1;" | Select-Object -First 1)
     $operatorRoleId = [long](Invoke-MySqlQuery "SELECT role_id FROM sys_role WHERE role_key = 'bge_operator' AND status = '0' AND del_flag = '0' LIMIT 1;" | Select-Object -First 1)
+    $portalRoleId = [long](Invoke-MySqlQuery "SELECT role_id FROM sys_role WHERE role_key = 'bge_portal_user' AND status = '0' AND del_flag = '0' LIMIT 1;" | Select-Object -First 1)
     $commonRoleId = [long](Invoke-MySqlQuery "SELECT role_id FROM sys_role WHERE role_key = 'common' AND status = '0' AND del_flag = '0' LIMIT 1;" | Select-Object -First 1)
-    if ($viewerRoleId -le 0 -or $operatorRoleId -le 0 -or $commonRoleId -le 0) {
+    if ($viewerRoleId -le 0 -or $operatorRoleId -le 0 -or $portalRoleId -le 0 -or $commonRoleId -le 0) {
         throw '集成验收所需角色不存在。'
     }
 
-    $viewerUserId = [long](Invoke-MySqlQuery "INSERT INTO sys_user (dept_id,user_name,nick_name,user_type,password,status,del_flag,pwd_update_date,create_by,create_time,remark) SELECT 103,'$viewerUserName','BGE Viewer','00',password,'0','0',NOW(),'acceptance',NOW(),'temporary acceptance user' FROM sys_user WHERE user_name='admin' AND del_flag='0'; SELECT LAST_INSERT_ID();" | Select-Object -Last 1)
-    $operatorUserId = [long](Invoke-MySqlQuery "INSERT INTO sys_user (dept_id,user_name,nick_name,user_type,password,status,del_flag,pwd_update_date,create_by,create_time,remark) SELECT 103,'$operatorUserName','BGE Operator','00',password,'0','0',NOW(),'acceptance',NOW(),'temporary acceptance user' FROM sys_user WHERE user_name='admin' AND del_flag='0'; SELECT LAST_INSERT_ID();" | Select-Object -Last 1)
-    $commonUserId = [long](Invoke-MySqlQuery "INSERT INTO sys_user (dept_id,user_name,nick_name,user_type,password,status,del_flag,pwd_update_date,create_by,create_time,remark) SELECT 103,'$commonUserName','BGE Common','00',password,'0','0',NOW(),'acceptance',NOW(),'temporary acceptance user' FROM sys_user WHERE user_name='admin' AND del_flag='0'; SELECT LAST_INSERT_ID();" | Select-Object -Last 1)
+    $viewerUserId = [long](Invoke-MySqlQuery "INSERT INTO sys_user (dept_id,user_name,nick_name,user_type,password,status,del_flag,pwd_update_date,create_by,create_time,remark) SELECT 103,'$viewerUserName','BGE Viewer','00',password,'0','0',NOW(),'acceptance',NOW(),'temporary acceptance user' FROM sys_user WHERE user_name='$acceptanceAdminUserName' AND del_flag='0'; SELECT LAST_INSERT_ID();" | Select-Object -Last 1)
+    $operatorUserId = [long](Invoke-MySqlQuery "INSERT INTO sys_user (dept_id,user_name,nick_name,user_type,password,status,del_flag,pwd_update_date,create_by,create_time,remark) SELECT 103,'$operatorUserName','BGE Operator','00',password,'0','0',NOW(),'acceptance',NOW(),'temporary acceptance user' FROM sys_user WHERE user_name='$acceptanceAdminUserName' AND del_flag='0'; SELECT LAST_INSERT_ID();" | Select-Object -Last 1)
+    $commonUserId = [long](Invoke-MySqlQuery "INSERT INTO sys_user (dept_id,user_name,nick_name,user_type,password,status,del_flag,pwd_update_date,create_by,create_time,remark) SELECT 103,'$commonUserName','BGE Common','00',password,'0','0',NOW(),'acceptance',NOW(),'temporary acceptance user' FROM sys_user WHERE user_name='$acceptanceAdminUserName' AND del_flag='0'; SELECT LAST_INSERT_ID();" | Select-Object -Last 1)
     [void](Invoke-MySqlQuery "INSERT INTO sys_user_role (user_id,role_id) VALUES ($viewerUserId,$viewerRoleId),($operatorUserId,$operatorRoleId),($commonUserId,$commonRoleId);")
 
-    $viewerToken = Login-RuoYi -UserName $viewerUserName -Password $adminPassword
-    $operatorToken = Login-RuoYi -UserName $operatorUserName -Password $adminPassword
-    $commonToken = Login-RuoYi -UserName $commonUserName -Password $adminPassword
+    $viewerToken = Login-RuoYi -UserName $viewerUserName -Password $acceptancePassword
+    $operatorToken = Login-RuoYi -UserName $operatorUserName -Password $acceptancePassword
+    $commonToken = Login-RuoYi -UserName $commonUserName -Password $acceptancePassword
 
     $routers = Invoke-RuoYiJson -Method GET -Path '/getRouters' -Token $viewerToken
     $summary.dynamicBgeMenu = [int]$routers.code -eq 200 -and (Test-ContainsBgeRouter -Nodes @($routers.data))
@@ -447,17 +508,43 @@ try {
     # Portal acceptance uses existing local task data only. It maps one
     # completed task to a temporary user so ownership filters and image-cookie
     # handling can be proven without submitting a paid generation request.
-    Register-Portal -UserName $portalUserNameA -NickName 'Portal A' -Password $adminPassword
-    Register-Portal -UserName $portalUserNameB -NickName 'Portal B' -Password $adminPassword
+    Register-Portal -UserName $portalUserNameA -NickName 'Portal A' -Password $acceptancePassword
+    Register-Portal -UserName $portalUserNameB -NickName 'Portal B' -Password $acceptancePassword
     $portalUserIdA = [long](Invoke-MySqlQuery "SELECT user_id FROM sys_user WHERE user_name = '$portalUserNameA' AND create_by = 'portal-register' LIMIT 1;" | Select-Object -First 1)
     $portalUserIdB = [long](Invoke-MySqlQuery "SELECT user_id FROM sys_user WHERE user_name = '$portalUserNameB' AND create_by = 'portal-register' LIMIT 1;" | Select-Object -First 1)
     $portalRoleGrantCount = [int](Invoke-MySqlQuery "SELECT COUNT(*) FROM sys_user_role ur JOIN sys_role r ON r.role_id = ur.role_id WHERE ur.user_id IN ($portalUserIdA,$portalUserIdB) AND r.role_key = 'bge_portal_user' AND r.del_flag = '0';" | Select-Object -First 1)
     $portalUnexpectedRoleCount = [int](Invoke-MySqlQuery "SELECT COUNT(*) FROM sys_user_role WHERE user_id IN ($portalUserIdA,$portalUserIdB);" | Select-Object -First 1)
     $summary.portalRegistration = $portalUserIdA -gt 0 -and $portalUserIdB -gt 0 -and $portalRoleGrantCount -eq 2 -and $portalUnexpectedRoleCount -eq 2
+    $encodedPortalName = [Uri]::EscapeDataString($portalUserNameA)
+    $accountLevelUsers = Invoke-RuoYiJson -Method GET -Path "/system/user/list?pageNum=1&pageSize=20&roleId=$portalRoleId&userName=$encodedPortalName" -Token $adminToken
+    $summary.accountLevelFilter = [int]$accountLevelUsers.code -eq 200 -and @($accountLevelUsers.rows).Count -eq 1 -and `
+        [long]$accountLevelUsers.rows[0].userId -eq $portalUserIdA -and [long]$accountLevelUsers.rows[0].roleId -eq $portalRoleId
 
-    $portalTokenA = Login-Portal -UserName $portalUserNameA -Password $adminPassword
-    $portalTokenB = Login-Portal -UserName $portalUserNameB -Password $adminPassword
+    $portalTokenA = Login-Portal -UserName $portalUserNameA -Password $acceptancePassword
+    [void](Invoke-RuoYiJson -Method POST -Path '/portal-auth/logout' -Token $portalTokenA)
+    $portalTokenA = Login-Portal -UserName $portalUserNameA -Password $acceptancePassword
+    $portalTokenB = Login-Portal -UserName $portalUserNameB -Password $acceptancePassword
     $summary.portalLogin = -not [string]::IsNullOrWhiteSpace($portalTokenA) -and -not [string]::IsNullOrWhiteSpace($portalTokenB)
+    $summary.portalSecondLogin = -not [string]::IsNullOrWhiteSpace($portalTokenA)
+
+    $portalPointsBefore = Invoke-RuoYiJson -Method GET -Path '/portal-api/points' -Token $portalTokenA
+    $portalPointsRepeated = Invoke-RuoYiJson -Method GET -Path '/portal-api/points' -Token $portalTokenA
+    $welcomeRows = @($portalPointsRepeated.data.ledger | Where-Object { [string]$_.type -eq 'welcome' })
+    $summary.portalWelcomePoints = [int]$portalPointsBefore.code -eq 200 -and [long]$portalPointsBefore.data.account.balance -eq 30
+    $summary.portalWelcomeOnce = [long]$portalPointsRepeated.data.account.balance -eq 30 -and $welcomeRows.Count -eq 1
+
+    $recharge = Invoke-RuoYiJson -Method POST -Path '/portal-api/points/recharges' -Token $portalTokenA -Body @{
+        points = 50
+        note = 'integration acceptance'
+    }
+    $rechargeId = [long]$recharge.data.id
+    $summary.portalRechargeRequest = [int]$recharge.code -eq 200 -and $rechargeId -gt 0 -and [string]$recharge.data.status -eq 'pending'
+    $approvedRecharge = Invoke-RuoYiJson -Method POST -Path "/bge/points/recharges/$rechargeId/review" -Token $adminToken -Body @{
+        approve = $true
+        note = 'integration acceptance'
+    }
+    $portalPointsAfter = Invoke-RuoYiJson -Method GET -Path '/portal-api/points' -Token $portalTokenA
+    $summary.portalRechargeApproved = [int]$approvedRecharge.code -eq 200 -and [string]$approvedRecharge.data.status -eq 'approved' -and [long]$portalPointsAfter.data.account.balance -eq 80
 
     $portalRouters = Invoke-RuoYiJson -Method GET -Path '/getRouters' -Token $portalTokenA
     $portalSystem = Invoke-RuoYiJson -Method GET -Path '/system/user/list?pageNum=1&pageSize=1' -Token $portalTokenA
@@ -466,12 +553,15 @@ try {
     $summary.portalNoAdminMenu = [int]$portalRouters.code -eq 200 -and $portalRouterCount -eq 0 -and [int]$portalSystem.code -eq 403 -and (Get-RuoYiBusinessCode -Response $portalWorkbench) -eq 403
 
     $portalExamples = Invoke-RuoYiJson -Method GET -Path '/portal-api/api/examples' -Token $portalTokenA
-    $summary.portalExamplesRead = @($portalExamples.examples).Count -gt 0
+    $summary.portalExamplesRead = $portalExamples.PSObject.Properties.Name -contains 'examples'
 
     $portalCandidate = $null
     foreach ($candidate in @($taskItems)) {
         $candidateId = [string]$candidate.taskId
         if ([string]::IsNullOrWhiteSpace($candidateId)) { continue }
+        $escapedCandidateId = $candidateId.Replace("'", "''")
+        $existingOwnerCount = [int](Invoke-MySqlQuery "SELECT COUNT(*) FROM bge_portal_job WHERE job_type = 'image' AND job_id = '$escapedCandidateId';" | Select-Object -First 1)
+        if ($existingOwnerCount -gt 0) { continue }
         $candidateDetail = Invoke-RuoYiJson -Method GET -Path ("/bge/tasks/" + [Uri]::EscapeDataString($candidateId)) -Token $adminToken
         $candidateAssets = @($candidateDetail.data.output.files.main | Where-Object { $null -ne $_ }) +
             @($candidateDetail.data.output.files.detail | Where-Object { $null -ne $_ })
@@ -557,18 +647,27 @@ finally {
         }
     }
 
-    if ($viewerUserId -or $operatorUserId -or $commonUserId -or $portalUserIdA -or $portalUserIdB) {
-        $ids = @($viewerUserId, $operatorUserId, $commonUserId, $portalUserIdA, $portalUserIdB) | Where-Object { $_ } | ForEach-Object { [long]$_ }
+    if ($viewerUserId -or $operatorUserId -or $commonUserId -or $portalUserIdA -or $portalUserIdB -or $acceptanceAdminUserId) {
+        $ids = @($viewerUserId, $operatorUserId, $commonUserId, $portalUserIdA, $portalUserIdB, $acceptanceAdminUserId) | Where-Object { $_ } | ForEach-Object { [long]$_ }
         if ($ids.Count -gt 0) {
             $joinedIds = $ids -join ','
             try {
-                [void](Invoke-MySqlQuery "DELETE FROM bge_portal_job WHERE owner_user_id IN ($joinedIds); DELETE FROM sys_user_role WHERE user_id IN ($joinedIds); DELETE FROM sys_user WHERE user_id IN ($joinedIds) AND (create_by = 'acceptance' OR create_by = 'portal-register');")
+                [void](Invoke-MySqlQuery "DELETE FROM bge_portal_job WHERE owner_user_id IN ($joinedIds); DELETE FROM bge_recharge_request WHERE user_id IN ($joinedIds); DELETE FROM bge_point_charge WHERE user_id IN ($joinedIds); DELETE FROM bge_point_ledger WHERE user_id IN ($joinedIds); DELETE FROM bge_point_account WHERE user_id IN ($joinedIds); DELETE FROM sys_user_role WHERE user_id IN ($joinedIds); DELETE FROM sys_user WHERE user_id IN ($joinedIds) AND (create_by = 'acceptance' OR create_by = 'portal-register');")
                 $remaining = [int](Invoke-MySqlQuery "SELECT COUNT(*) FROM sys_user WHERE user_id IN ($joinedIds);" | Select-Object -First 1)
                 $summary.temporaryUsersRemoved = $remaining -eq 0
             }
             catch {
                 Write-Warning '临时验收用户清理失败，需要人工检查。'
             }
+        }
+    }
+
+    if ($acceptanceAdminRoleId) {
+        try {
+            [void](Invoke-MySqlQuery "DELETE FROM sys_role_menu WHERE role_id=$acceptanceAdminRoleId; DELETE FROM sys_role_dept WHERE role_id=$acceptanceAdminRoleId; DELETE FROM sys_role WHERE role_id=$acceptanceAdminRoleId AND create_by='acceptance';")
+        }
+        catch {
+            Write-Warning '临时验收角色清理失败，需要人工检查。'
         }
     }
 
@@ -597,6 +696,7 @@ finally {
     else { $env:MYSQL_PWD = $previousMySqlPassword }
     if ($null -eq $previousRedisCliAuth) { Remove-Item Env:REDISCLI_AUTH -ErrorAction SilentlyContinue }
     else { $env:REDISCLI_AUTH = $previousRedisCliAuth }
+    $acceptancePassword = $null
 }
 
 $failed = @($summary.GetEnumerator() | Where-Object { $_.Key -ne 'taskCount' -and $_.Value -ne $true })

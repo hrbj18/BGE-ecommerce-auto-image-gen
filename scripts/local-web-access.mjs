@@ -7,20 +7,19 @@ export function requestClientAddress(req) {
 }
 
 export function normalizeAccessMode(value) {
-  return String(value || "").trim().toLowerCase() === "token" ? "token" : "off";
+  return "token";
 }
 
-export function authorizeWriteRequest(req, accessToken, accessMode = "off") {
-  if (normalizeAccessMode(accessMode) === "off") return { ok: true, mode: "open" };
+export function authorizeWriteRequest(req, accessToken, accessMode = "token") {
+  normalizeAccessMode(accessMode);
   const configured = String(accessToken || "").trim();
   if (!configured) {
-    if (isLoopbackAddress(requestClientAddress(req))) return { ok: true, mode: "loopback" };
-    return { ok: false, statusCode: 401, code: "LAN_TOKEN_REQUIRED", message: "局域网写操作需要配置并输入内部访问令牌。" };
+    return { ok: false, statusCode: 503, code: "INTERNAL_TOKEN_NOT_CONFIGURED", message: "内部访问令牌未配置，生图服务已锁定。" };
   }
   const authorization = String(req.headers?.authorization || "");
   const headerToken = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() || String(req.headers?.["x-internal-token"] || "").trim();
   if (!safeTokenEqual(configured, headerToken)) {
-    return { ok: false, statusCode: 401, code: "UNAUTHORIZED", message: "内部访问令牌无效，请重新输入。" };
+    return { ok: false, statusCode: 401, code: "UNAUTHORIZED", message: "未通过登录代理鉴权，无法执行生图操作。" };
   }
   return { ok: true, mode: "token" };
 }

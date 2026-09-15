@@ -14,7 +14,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  */
 @Order(Ordered.HIGHEST_PRECEDENCE)
 @RestControllerAdvice(assignableTypes = { BgeController.class, BgeWorkbenchController.class,
-        BgePortalController.class, PortalAuthController.class })
+        BgePortalController.class, BgePortalPointController.class, BgePointController.class,
+        PortalAuthController.class })
 public class BgeExceptionHandler
 {
     @ExceptionHandler(BgeProxyException.class)

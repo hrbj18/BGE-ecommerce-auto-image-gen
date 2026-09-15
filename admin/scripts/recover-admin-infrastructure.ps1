@@ -141,7 +141,9 @@ if ($validInfrastructure) {
 }
 else {
     $dbHost = '127.0.0.1'
-    $dbPort = '3306'
+    # Docker/WinNAT can reserve the traditional 3306 port on Windows hosts.
+    # Use a stable high port while keeping MySQL's container port unchanged.
+    $dbPort = '13306'
     $dbName = 'ruoyi_bge'
     $dbUser = 'ruoyi_bge'
     $dbPassword = New-RandomSecret -ByteCount 32
@@ -162,7 +164,7 @@ else {
     $mysqlRootPassword = New-RandomSecret -ByteCount 32
     try {
         $mysqlResult = Invoke-DockerQuietly -Arguments @('run', '-d', '--name', $MySqlContainerName, '--restart', 'unless-stopped',
-            '-p', '127.0.0.1:3306:3306', '--env', "MYSQL_ROOT_PASSWORD=$mysqlRootPassword", '--env', "MYSQL_DATABASE=$dbName",
+            '-p', "127.0.0.1:${dbPort}:3306", '--env', "MYSQL_ROOT_PASSWORD=$mysqlRootPassword", '--env', "MYSQL_DATABASE=$dbName",
             '--env', "MYSQL_USER=$dbUser", '--env', "MYSQL_PASSWORD=$dbPassword", 'mysql:8.4')
         if ($mysqlResult.ExitCode -ne 0) {
             throw 'MySQL 容器创建失败。'
@@ -219,4 +221,6 @@ $redisPassword = $null
     -InfrastructureCredentialPath $InfrastructureCredentialPath `
     -AdminSecretPath $AdminSecretPath
 
-Write-Host '若依基础设施恢复完成，统一入口地址为 http://127.0.0.1:8001'
+Write-Host '若依基础设施恢复完成。'
+Write-Host 'Admin entry: http://127.0.0.1:8001/'
+Write-Host 'User portal: http://127.0.0.1:8003/portal/'

@@ -27,7 +27,7 @@ public class PortalException extends RuntimeException
 
     public static PortalException forbidden()
     {
-        return new PortalException(HttpStatus.FORBIDDEN, "当前账号没有用户端作图权限。 ");
+        return new PortalException(HttpStatus.FORBIDDEN, "当前登录状态无效或账号不可用，请重新登录。 ");
     }
 
     public static PortalException notFound()
@@ -38,5 +38,10 @@ public class PortalException extends RuntimeException
     public static PortalException conflict(String message)
     {
         return new PortalException(HttpStatus.CONFLICT, message);
+    }
+
+    public static PortalException paymentRequired(String message)
+    {
+        return new PortalException(HttpStatus.PAYMENT_REQUIRED, message);
     }
 }

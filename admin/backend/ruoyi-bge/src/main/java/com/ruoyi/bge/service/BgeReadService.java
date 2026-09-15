@@ -1,5 +1,6 @@
 package com.ruoyi.bge.service;
 
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -13,6 +14,7 @@ import com.ruoyi.bge.domain.BgeDtos.Health;
 import com.ruoyi.bge.domain.BgeDtos.Output;
 import com.ruoyi.bge.domain.BgeDtos.OutputFiles;
 import com.ruoyi.bge.domain.BgeDtos.Progress;
+import com.ruoyi.bge.domain.BgeDtos.Resilience;
 import com.ruoyi.bge.domain.BgeDtos.TaskDetail;
 import com.ruoyi.bge.domain.BgeDtos.TaskList;
 import com.ruoyi.bge.domain.BgeDtos.TaskSummary;
@@ -43,6 +45,7 @@ public class BgeReadService
     {
         JsonNode source = client.getJson("/health");
         JsonNode disk = source.path("disk");
+        JsonNode resilience = source.path("resilience");
         return new Health(
                 text(source, "status", 32),
                 text(source, "state", 32),
@@ -52,6 +55,19 @@ public class BgeReadService
                 safeIdentifierOrEmpty(source.path("activeJobId").asText("")),
                 text(source, "activePhase", 48),
                 source.path("acceptingJobs").asBoolean(false),
+                integer(source, "recoveryQueueSize", 0, 1_000),
+                new Resilience(
+                        integer(resilience, "taskCount", 0, 100_000),
+                        integer(resilience, "terminalTaskCount", 0, 100_000),
+                        integer(resilience, "activeTaskCount", 0, 100_000),
+                        integer(resilience, "attemptCount", 0, 1_000_000),
+                        nullableDouble(resilience, "firstPassSuccessRate") == null ? 0.0 : nullableDouble(resilience, "firstPassSuccessRate"),
+                        integer(resilience, "recoveredTaskCount", 0, 100_000),
+                        nullableDouble(resilience, "completeSuccessRate") == null ? 0.0 : nullableDouble(resilience, "completeSuccessRate"),
+                        nullableDouble(resilience, "retryRate") == null ? 0.0 : nullableDouble(resilience, "retryRate"),
+                        longNumber(resilience, "p95AttemptDurationMs", 0, 24L * 60 * 60 * 1_000),
+                        integer(resilience, "capacityEventCount", 0, 1_000_000),
+                        integer(resilience, "rateLimitEventCount", 0, 1_000_000)),
                 new Disk(disk.path("ok").asBoolean(false), nullableDouble(disk, "availableGiB"),
                         nullableDouble(disk, "minimumGiB")));
     }
@@ -115,8 +131,21 @@ public class BgeReadService
                 summary.outputLanguage(), summary.suiteRatio(), summary.generationProfileId(),
                 summary.imageAspectRatioProfileId(), summary.imageResolutionId(), summary.imageResolutionLabel(), summary.mainImageCount(),
                 summary.detailImageCount(), summary.promptAvailable(), summary.promptComplete(),
-                summary.outputProductName(), summary.outputDisplayName(), summary.hasOutput(), summary.eventCount(),
+                summary.outputProductName(), summary.outputDisplayName(), summary.hasOutput(), summary.canRetry(), summary.eventCount(),
                 summary.latestEvent(), events, output);
+    }
+
+    public TaskDetail retryTask(String rawTaskId)
+    {
+        String taskId = BgePathPolicy.identifier(rawTaskId);
+        var response = client.forwardWorkbenchJson("POST",
+                "/api/jobs/" + BgePathPolicy.encode(taskId) + "/retry",
+                "application/json", "", InputStream.nullInputStream());
+        if (response.statusCode() < 200 || response.statusCode() >= 300)
+        {
+            throw BgeProxyException.unavailable();
+        }
+        return task(taskId);
     }
 
     public Output output(String rawOutputId)
@@ -195,6 +224,7 @@ public class BgeReadService
                 text(source, "outputProductName", 160),
                 text(source, "outputDisplayName", 160),
                 source.path("hasOutput").asBoolean(false),
+                source.path("canRetry").asBoolean(false),
                 integer(source, "eventCount", 0, 10_000),
                 mapEvent(source.path("latestEvent")));
     }

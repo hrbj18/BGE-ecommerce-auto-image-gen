@@ -1,5 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { normalizeOutputLanguage, outputLanguageProfile } from "../src/output-language-profiles.mjs";
+import { normalizeTargetPlatform, platformStyleProfile } from "../src/platform-style-profiles.mjs";
 
 export const generationRulesDirName = "生图规则";
 export const generationRuleDecisionFileName = "规则判断.md";
@@ -179,12 +181,14 @@ function explicitMatchesRule(rule, explicitValue, kind) {
     ...(rule.matchedKeywords || []),
   ].filter(Boolean).join(" "));
   if (kind === "platform") {
-    if (/amazon|亚马逊/.test(explicit)) return /amazon|亚马逊/.test(ruleText);
-    if (/淘宝|天猫|tmall|taobao|国内|通用|中国/.test(explicit)) return /domestic|国内|淘宝|天猫|通用/.test(ruleText);
+    const explicitProfile = platformStyleProfile(explicitValue);
+    const ruleProfile = platformStyleProfile(rule.targetPlatform || rule.ruleName || rule.ruleProfile);
+    if (explicitProfile && ruleProfile) return explicitProfile.id === ruleProfile.id;
   }
   if (kind === "language") {
-    if (/english|英文|英语/.test(explicit)) return /english|英文|英语/.test(ruleText);
-    if (/中文|简体|chinese|zh-cn|zh/.test(explicit)) return /中文|简体|chinese|zh-cn|zh/.test(ruleText);
+    const explicitProfile = outputLanguageProfile(explicitValue);
+    const ruleProfile = outputLanguageProfile(rule.outputLanguage || rule.ruleName || rule.ruleProfile);
+    if (explicitProfile && ruleProfile) return explicitProfile.id === ruleProfile.id;
   }
   return ruleText.includes(explicit);
 }
@@ -207,7 +211,7 @@ async function hydrateCombinedRuleSelection({ rootDir, rulesDir, decisionFile, c
   const hydratedCore = await hydrateRule(rootDir, rulesDir, coreRule, fallbackCoreRule);
   const hydratedPlatform = await hydrateRule(rootDir, rulesDir, platformRule, fallbackPlatformRule);
   const hydratedLanguage = await hydrateRule(rootDir, rulesDir, languageRule, fallbackLanguageRule);
-  const targetPlatform = clean(explicit.targetPlatform) || hydratedPlatform.targetPlatform || fallbackPlatformRule.targetPlatform;
+  const targetPlatform = normalizeTargetPlatform(clean(explicit.targetPlatform) || hydratedPlatform.targetPlatform, fallbackPlatformRule.targetPlatform);
   const outputLanguage = canonicalOutputLanguage(clean(explicit.outputLanguage) || hydratedLanguage.outputLanguage || fallbackLanguageRule.outputLanguage);
   const combinedName = `${hydratedCore.ruleName} + ${hydratedPlatform.ruleName} + ${hydratedLanguage.ruleName}`;
   const combinedText = [
@@ -397,9 +401,7 @@ function safeRulePath(rootDir, rulesDir, ruleFile) {
 
 function canonicalOutputLanguage(value) {
   const cleanValue = clean(value);
-  if (/english|英文|英语/i.test(cleanValue)) return "English";
-  if (/中文|简体|chinese|zh/i.test(cleanValue)) return "简体中文";
-  return cleanValue;
+  return normalizeOutputLanguage(cleanValue) || cleanValue;
 }
 
 function normalizeKey(value) {

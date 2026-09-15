@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 // @ts-ignore - The local web helper is an ESM script exercised directly by runtime tests.
 import { generationRuleDecisionFileName, generationRulesDirName, parseRuleDecisionMarkdown, selectGenerationRule } from "../scripts/generation-rule-loader.mjs";
 
@@ -159,6 +160,36 @@ test("does not treat banned random English as English output", async () => {
   assert.equal(selected.platformRuleProfile, "domestic-default");
   assert.equal(selected.languageRuleProfile, "zh-CN");
   assert.equal(selected.outputLanguage, "简体中文");
+});
+
+test("routes every public language to its own checked-in rule file", async () => {
+  const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const languages = ["简体中文", "English", "日本語", "한국어", "Español", "Français", "Deutsch", "Italiano", "Português", "العربية"];
+  for (const outputLanguage of languages) {
+    const selected = await selectGenerationRule(projectRoot, `输出语言：${outputLanguage}`, {
+      targetPlatform: "国内通用",
+      outputLanguage,
+    });
+    assert.equal(selected.outputLanguage, outputLanguage);
+    assert.equal(selected.languageRuleName, outputLanguage);
+    assert.match(selected.languageRuleText, /规则版本：v\d+/);
+  }
+});
+
+test("routes all ten platforms independently from all ten output languages", async () => {
+  const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const platforms = ["国内通用", "国外通用", "淘宝/天猫", "京东", "抖音电商", "小红书", "Amazon", "TikTok Shop", "Shopee", "Lazada"];
+  const languages = ["简体中文", "English", "日本語", "한국어", "Español", "Français", "Deutsch", "Italiano", "Português", "العربية"];
+  for (const targetPlatform of platforms) {
+    for (const outputLanguage of languages) {
+      const selected = await selectGenerationRule(projectRoot, "", { targetPlatform, outputLanguage });
+      assert.equal(selected.targetPlatform, targetPlatform, `${targetPlatform}/${outputLanguage} platform`);
+      assert.equal(selected.platformRuleName, targetPlatform === "国内通用" ? "默认国内平台" : targetPlatform, `${targetPlatform}/${outputLanguage} platform rule`);
+      assert.equal(selected.outputLanguage, outputLanguage, `${targetPlatform}/${outputLanguage} language`);
+      assert.equal(selected.languageRuleName, outputLanguage, `${targetPlatform}/${outputLanguage} language rule`);
+      assert.match(selected.platformRuleText, /规则版本：v\d+/, `${targetPlatform} checked-in rule`);
+    }
+  }
 });
 
 async function makeRuleFixture(): Promise<string> {

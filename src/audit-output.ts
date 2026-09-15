@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { usesEnglishLanguageBaseline } from "./output-language-profiles.mjs";
 import sharp from "sharp";
 import { loadConfig } from "./config.ts";
 import {
@@ -145,7 +146,7 @@ async function refreshDerivedOutput(
   const mainImages = assets.filter((asset) => asset.role === "main").sort(assetOrder);
   const detailImages = assets.filter((asset) => asset.role === "detail").sort(assetOrder);
   const longDetailPath = detailImages.length ? await composeLongDetailImage(detailImages, path.join(outputDir, "详情页完整长图.jpg")) : undefined;
-  const english = /^en(?:glish)?$/i.test(task.outputLanguage?.trim() ?? "");
+  const english = usesEnglishLanguageBaseline(task.outputLanguage);
   const mainPreviewPath = mainImages.length ? await composeContactSheet(mainImages, path.join(outputDir, overviewFilename("main", task.mainImageCount)), { columns: 2, cellWidth: 720, background: "#f4f0ea", labelLanguage: english ? "en" : "zh" }) : undefined;
   const detailPreviewPath = detailImages.length ? await composeContactSheet(detailImages, path.join(outputDir, overviewFilename("detail", detailImageCountForTask(task))), { columns: 2, cellWidth: 520, background: "#f4f0ea", labelLanguage: english ? "en" : "zh" }) : undefined;
   const generationAuditPath = path.join(outputDir, "generation-audit.json");

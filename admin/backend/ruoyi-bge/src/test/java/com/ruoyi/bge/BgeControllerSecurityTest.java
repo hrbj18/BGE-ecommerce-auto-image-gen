@@ -13,6 +13,7 @@ import java.util.Set;
 import com.ruoyi.bge.controller.BgeController;
 import com.ruoyi.bge.domain.BgeDtos.Disk;
 import com.ruoyi.bge.domain.BgeDtos.Health;
+import com.ruoyi.bge.domain.BgeDtos.Resilience;
 import com.ruoyi.bge.service.BgeReadService;
 import com.ruoyi.common.core.domain.AjaxResult;
 import org.junit.jupiter.api.AfterEach;
@@ -41,7 +42,7 @@ class BgeControllerSecurityTest
     }
 
     @Test
-    void exposesOnlyFiveGetMappingsWithTheExpectedPermissions() throws Exception
+    void exposesFiveReadMappingsAndOneDedicatedRetryWriteWithExpectedPermissions() throws Exception
     {
         assertPermission("health", "@ss.hasPermi('bge:task:list')");
         assertPermission("tasks", "@ss.hasPermi('bge:task:list')", String.class, String.class);
@@ -49,11 +50,12 @@ class BgeControllerSecurityTest
         assertPermission("output", "@ss.hasPermi('bge:output:view')", String.class);
         assertPermission("asset", "@ss.hasPermi('bge:output:view')", String.class, String.class,
                 String.class, jakarta.servlet.http.HttpServletResponse.class);
+        assertPostPermission("retryTask", "@ss.hasPermi('bge:task:retry')", String.class);
 
         int getMappings = 0;
+        int postMappings = 0;
         for (Method method : BgeController.class.getDeclaredMethods())
         {
-            assertNull(method.getAnnotation(PostMapping.class));
             assertNull(method.getAnnotation(PutMapping.class));
             assertNull(method.getAnnotation(PatchMapping.class));
             assertNull(method.getAnnotation(DeleteMapping.class));
@@ -61,8 +63,13 @@ class BgeControllerSecurityTest
             {
                 getMappings++;
             }
+            if (method.getAnnotation(PostMapping.class) != null)
+            {
+                postMappings++;
+            }
         }
         assertEquals(5, getMappings);
+        assertEquals(1, postMappings);
     }
 
     @Test
@@ -74,7 +81,8 @@ class BgeControllerSecurityTest
             PermissionGate gate = context.getBean(PermissionGate.class);
             BgeReadService service = context.getBean(BgeReadService.class);
             when(service.health()).thenReturn(new Health("ok", "ready", "local-web-api", 1, 0,
-                    "", "idle", true, new Disk(true, 100.0, 10.0)));
+                    "", "idle", true, 0, new Resilience(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                    new Disk(true, 100.0, 10.0)));
 
             assertThrows(AccessDeniedException.class, controller::health);
 
@@ -87,12 +95,17 @@ class BgeControllerSecurityTest
             assertEquals(200, response.get(AjaxResult.CODE_TAG));
             assertThrows(AccessDeniedException.class, () -> controller.task("task-1"));
             assertThrows(AccessDeniedException.class, () -> controller.output("out-1"));
+            assertThrows(AccessDeniedException.class, () -> controller.retryTask("task-1"));
 
             gate.allow("bge:task:query", "bge:output:view");
             when(service.task(anyString())).thenReturn(null);
             when(service.output(anyString())).thenReturn(null);
             assertEquals(200, controller.task("task-1").get(AjaxResult.CODE_TAG));
             assertEquals(200, controller.output("out-1").get(AjaxResult.CODE_TAG));
+            assertThrows(AccessDeniedException.class, () -> controller.retryTask("task-1"));
+
+            gate.allow("bge:task:retry");
+            assertEquals(200, controller.retryTask("task-1").get(AjaxResult.CODE_TAG));
         }
     }
 
@@ -101,6 +114,16 @@ class BgeControllerSecurityTest
     {
         Method method = BgeController.class.getDeclaredMethod(methodName, parameterTypes);
         assertNotNull(method.getAnnotation(GetMapping.class));
+        PreAuthorize permission = method.getAnnotation(PreAuthorize.class);
+        assertNotNull(permission);
+        assertEquals(expression, permission.value());
+    }
+
+    private static void assertPostPermission(String methodName, String expression, Class<?>... parameterTypes)
+            throws Exception
+    {
+        Method method = BgeController.class.getDeclaredMethod(methodName, parameterTypes);
+        assertNotNull(method.getAnnotation(PostMapping.class));
         PreAuthorize permission = method.getAnnotation(PreAuthorize.class);
         assertNotNull(permission);
         assertEquals(expression, permission.value());

@@ -2,12 +2,13 @@
 param(
     [string]$InfrastructureCredentialPath = (Join-Path $env:LOCALAPPDATA 'BGE-RuoYi-Infra\credentials.clixml'),
     [string]$AdminSecretPath = (Join-Path $env:LOCALAPPDATA 'BGE-RuoYi-Infra\admin-secrets.clixml'),
-    [ValidateSet('http://127.0.0.1:8001/', 'http://127.0.0.1:8001/portal/')]
-    [string]$EntryUri = 'http://127.0.0.1:8001/portal/'
+    [ValidateSet('http://127.0.0.1:8001/', 'http://127.0.0.1:8003/portal/')]
+    [string]$EntryUri = 'http://127.0.0.1:8003/portal/',
+    [switch]$OpenBoth
 )
 
 $ErrorActionPreference = 'Stop'
-$portalUri = 'http://127.0.0.1:8001/portal/'
+$portalUri = 'http://127.0.0.1:8003/portal/'
 
 if (-not (Test-Path -LiteralPath $InfrastructureCredentialPath) -or
         -not (Test-Path -LiteralPath $AdminSecretPath)) {
@@ -52,6 +53,7 @@ function Write-LauncherReport {
             time = (Get-Date).ToUniversalTime().ToString('o')
             result = $Result
             entryUri = $EntryUri
+            openBoth = [bool]$OpenBoth
             repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
             account = [Security.Principal.WindowsIdentity]::GetCurrent().Name
             accountSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -111,11 +113,10 @@ function Test-UserPortalStack {
     $engineReady = Test-HttpEndpoint -Uri 'http://127.0.0.1:8787/health' `
         -Headers @{ Authorization = "Bearer $env:BGE_ENGINE_ACCESS_TOKEN" }
     $backendReady = Test-HttpEndpoint -Uri "http://127.0.0.1:$env:RUOYI_SERVER_PORT/captchaImage"
-    $portalFrontendReady = Test-HttpEndpoint -Uri 'http://127.0.0.1:8003/portal/' `
+    $portalFrontendReady = Test-HttpEndpoint -Uri $portalUri `
         -RequiredText 'id="root"'
-    $unifiedEntryReady = Test-HttpEndpoint -Uri $portalUri `
-        -RequiredText 'id="root"'
-    return $engineReady -and $backendReady -and $portalFrontendReady -and $unifiedEntryReady
+    $adminEntryReady = Test-HttpEndpoint -Uri 'http://127.0.0.1:8001/'
+    return $engineReady -and $backendReady -and $portalFrontendReady -and $adminEntryReady
 }
 
 function Test-BgeNodeSourceFresh {
@@ -213,9 +214,15 @@ function Test-LocalPort {
 }
 
 function Wait-InfrastructurePorts {
+    $mySqlPort = 0
+    $redisPort = 0
+    if (-not [int]::TryParse([string]$env:BGE_RUOYI_MYSQL_PORT, [ref]$mySqlPort) -or
+            -not [int]::TryParse([string]$env:BGE_RUOYI_REDIS_PORT, [ref]$redisPort)) {
+        throw 'The configured MySQL or Redis port is invalid.'
+    }
     $deadline = (Get-Date).AddSeconds(90)
     do {
-        if ((Test-LocalPort -Port 3306) -and (Test-LocalPort -Port 6379)) { return }
+        if ((Test-LocalPort -Port $mySqlPort) -and (Test-LocalPort -Port $redisPort)) { return }
         Start-Sleep -Seconds 2
     } while ((Get-Date) -lt $deadline)
     throw 'MySQL or Redis did not become ready within 90 seconds.'
@@ -234,6 +241,12 @@ function Start-ExistingInfrastructure {
         throw 'The existing MySQL or Redis container could not be started.'
     }
     Wait-InfrastructurePorts
+}
+
+function Sync-BgeDatabase {
+    & (Join-Path $PSScriptRoot 'initialize-admin-db.ps1') `
+        -InfrastructureCredentialPath $InfrastructureCredentialPath `
+        -AdminSecretPath $AdminSecretPath
 }
 
 $startupMutex = [System.Threading.Mutex]::new($false, 'Local\BGE-RuoYi-Startup')
@@ -268,6 +281,7 @@ try {
 
     $portalStackReady = $environmentReady -and (Test-UserPortalStack)
     if ($portalStackReady) {
+        Sync-BgeDatabase
         $backendJar = Join-Path $BgeRuoYiRepositoryRoot 'admin\backend\ruoyi-admin\target\ruoyi-admin.jar'
         if (-not (Test-BgeBackendArtifactFresh -RepositoryRoot $BgeRuoYiRepositoryRoot -BackendJar $backendJar)) {
             Write-Host 'The running RuoYi backend is older than its source. Refreshing only the backend...'
@@ -301,6 +315,7 @@ try {
         $redisExists = Test-DockerContainer -Name 'bge-ruoyi-redis'
         if ($environmentReady -and $mysqlExists -and $redisExists) {
             Start-ExistingInfrastructure
+            Sync-BgeDatabase
             & (Join-Path $PSScriptRoot 'start-admin.ps1') `
                 -InfrastructureCredentialPath $InfrastructureCredentialPath `
                 -AdminSecretPath $AdminSecretPath
@@ -319,9 +334,17 @@ try {
         }
     }
 
-    Start-Process -FilePath $EntryUri
+    $entryUris = if ($OpenBoth) {
+        @('http://127.0.0.1:8001/', 'http://127.0.0.1:8003/portal/')
+    }
+    else {
+        @($EntryUri)
+    }
+    foreach ($uri in $entryUris) {
+        Start-Process -FilePath $uri
+    }
     Write-LauncherReport -Result 'ready'
-    Write-Host "Page opened: $EntryUri"
+    Write-Host "Page opened: $($entryUris -join ', ')"
 }
 catch {
     Write-LauncherReport -Result 'failed' -Failure $_

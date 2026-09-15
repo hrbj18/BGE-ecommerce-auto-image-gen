@@ -1,3 +1,5 @@
+import { usesEnglishLanguageBaseline } from "../src/output-language-profiles.mjs";
+
 const categoryPatterns = [
   {
     pattern: /破壁机|搅拌机|料理机|豆浆机|果汁机|榨汁机|blender|mixer|smoothie/i,
@@ -55,5 +57,5 @@ export function inferCategoryFromSource(source = "", outputLanguage = "") {
   const text = String(source || "");
   const match = categoryPatterns.find(({ pattern }) => pattern.test(text));
   if (!match) return "";
-  return outputLanguage === "English" ? match.en : match.zh;
+  return usesEnglishLanguageBaseline(outputLanguage) ? match.en : match.zh;
 }

@@ -3,6 +3,7 @@ import { openAsBlob } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import sharp from "sharp";
+import { platformStyleProfile } from "./platform-style-profiles.mjs";
 import type {
   AppConfig,
   AssetFailure,
@@ -38,6 +39,7 @@ import { checkGeneratedImage } from "./quality-checker.ts";
 import { auditNativePromptSet, auditTaskIdentity, classifyProductIdentity, formatPromptAuditFailure } from "./prompt-audit.ts";
 import {
   isActionableGeneratedVisualAuditFailure,
+  isTextBoundaryGeneratedVisualAuditFailure,
   normalizeGeneratedVisualAudit,
   skippedGeneratedVisualAudit,
   type GeneratedVisualAuditExpected,
@@ -60,6 +62,11 @@ import {
   type CreativePlan,
   type DirectedStoryboardFrame
 } from "./creative-director.ts";
+import {
+  outputLanguageInstruction,
+  outputLanguagePromptName,
+  usesEnglishLanguageBaseline,
+} from "./output-language-profiles.mjs";
 import {
   AIECHO_TASK_LEDGER_FILENAME,
   AiEchoTaskAmbiguousError,
@@ -734,13 +741,55 @@ export class OpenAiImageGenerator implements ImageGenerator {
     };
 
     const missingJobs = pendingJobs.filter(({ spec }) => !hasNativeAsset(spec));
-    const canRecoverMissing = mainImages.length + detailImages.length > 0;
-    if (missingJobs.length && canRecoverMissing) {
+    let recoveryJobs = missingJobs;
+    if (missingJobs.length && mainImages.length + detailImages.length === 0 && nativeImageFullFailureProbeEnabled()) {
+      const probeJob = missingJobs[0];
+      const probeDelayMs = nativeImageFullFailureProbeDelayMs();
+      console.warn(`[native-image] initial batch produced no usable image; probing ${nativeImageJobLabel(probeJob.spec)} after ${probeDelayMs}ms`);
+      publishProgress("recovering", "首轮未取得可用图片，系统冷却后正在单路探测恢复。", {
+        concurrency: 1,
+        nextRetryDelayMs: probeDelayMs
+      });
+      if (probeDelayMs > 0) await sleep(probeDelayMs);
+      try {
+        const generation = await this.generateValidatedNativeAsset({
+          spec: probeJob.spec,
+          outputPath: probeJob.outputPath,
+          productImages,
+          task,
+          invalidDir: path.join(rawDir, "invalid-native"),
+          attemptNumber: 90,
+          aiEchoLedger: probeJob.aiEchoLedger
+        });
+        await registerRecoveredNativeAsset(probeJob, generation, generation.attempts + 1);
+        progress.completed += 1;
+        if (probeJob.spec.role === "main") progress.mainCompleted += 1;
+        else progress.detailCompleted += 1;
+        if (!progress.firstPreviewAt && probeJob.spec.role === "main") {
+          progress.firstPreviewAt = new Date().toISOString();
+          progress.firstPreviewElapsedMs = Date.now() - startedAt.getTime();
+        }
+        publishProgress("recovering", "单路探测已恢复，正在补齐其余图片。", { concurrency: nativeImageRecoveryConcurrency() });
+        recoveryJobs = missingJobs.slice(1);
+      } catch (error) {
+        const existingFailure = failures.find((item) => item.role === probeJob.spec.role && item.index === probeJob.spec.index);
+        const probeError = errorMessage(error);
+        if (existingFailure) {
+          existingFailure.error = `${existingFailure.error}; 全失败探测仍失败：${probeError}`;
+          existingFailure.attempts += 1;
+        }
+        updatePromptRecord(probeJob.spec, { status: "failed", error: probeError });
+        await persistPromptRecords();
+        recoveryJobs = [];
+        console.warn(`[native-image] full-failure probe failed; deferring whole-task recovery reason=${probeError.slice(0, 220)}`);
+      }
+    }
+    if (recoveryJobs.length && mainImages.length + detailImages.length > 0) {
       const recoveryConcurrency = nativeImageRecoveryConcurrency();
-      console.warn(`[native-image] recovery queue start missing=${missingJobs.length} concurrency=${recoveryConcurrency}`);
-      publishProgress("recovering", `正在并行补齐 ${missingJobs.length} 张失败图片。`, { concurrency: recoveryConcurrency });
+      console.warn(`[native-image] recovery queue start missing=${recoveryJobs.length} concurrency=${recoveryConcurrency}`);
+      publishProgress("recovering", `正在并行补齐 ${recoveryJobs.length} 张失败图片。`, { concurrency: recoveryConcurrency });
       await mapLimitedSettled(
-        missingJobs,
+        recoveryJobs,
         recoveryConcurrency,
         async (job) => {
           let lastRecoveryError: unknown;
@@ -789,8 +838,8 @@ export class OpenAiImageGenerator implements ImageGenerator {
           await persistPromptRecords();
         }
       );
-    } else if (missingJobs.length) {
-      console.warn("[native-image] recovery queue skipped because the initial batch produced no usable image");
+    } else if (missingJobs.length && mainImages.length + detailImages.length === 0) {
+      console.warn("[native-image] full-failure probe did not recover; persistent task recovery will continue later");
     }
 
     const generationAuditPath = path.join(outputDir, "generation-audit.json");
@@ -808,7 +857,14 @@ export class OpenAiImageGenerator implements ImageGenerator {
     // File validation only proves that an image exists. Run one batched visual
     // review after the recovery queue so the reviewer can compare all scenes at
     // once and identify repeated compositions or unproven selling points.
-    publishProgress("quality-review", "主图已可查看，正在后台进行整组视觉质检。", { concurrency: 0 });
+    const hasGeneratedAssets = mainImages.length + detailImages.length > 0;
+    publishProgress(
+      hasGeneratedAssets ? "quality-review" : "recovering",
+      hasGeneratedAssets
+        ? "主图已可查看，正在后台进行整组视觉质检。"
+        : "首轮未取得可用图片，正在保存任务状态并准备自动恢复。",
+      { concurrency: 0 }
+    );
     let visualAudit = await this.auditGeneratedNativeOutput(task, productImages, selectedSpecs, [...mainImages, ...detailImages]);
     if (visualAudit.enabled && !visualAudit.passed && outputVisualAuditRetryEnabled()) {
       const visualRetryItems = visualAudit.items.filter(isActionableGeneratedVisualAuditFailure);
@@ -820,62 +876,79 @@ export class OpenAiImageGenerator implements ImageGenerator {
           qualityRetryCompleted: 0
         });
       }
-      await mapLimitedSettled(
-        visualRetryItems,
-        visualRetryConcurrency,
-        async (item) => {
-          const job = jobs.find((candidate) => candidate.spec.role === item.role && candidate.spec.index === item.index);
-          if (!job) throw new Error(`未找到质检返工图片：${item.role}-${item.index}`);
-          const retrySpec: NativeImageSpec = {
-            ...job.spec,
-            prompt: `${job.spec.prompt}\n\nVISUAL REVIEW RETRY:\nThe retry must still execute this exact plan:\n${job.spec.auditSummary || "Use the current frame mission above."}\nChange the composition, product state, camera or action as needed to directly prove the selling point. Do not repeat the rejected scene. Review notes: ${item.reasons.join("; ")}`
-          };
-          // aiEcho validates job.outputPath.part and atomically swaps it into
-          // job.outputPath, so the accepted original survives until the new
-          // candidate passes every check. Other providers retain the separate
-          // reviewed candidate plus an atomic copy into the formal path.
-          const retryCandidatePath = job.aiEchoLedger
-            ? job.outputPath
-            : path.join(
-              rawDir,
-              `visual-review-${retrySpec.role}-${pad(retrySpec.index)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`
-            );
-          if (!job.aiEchoLedger) await fs.rm(retryCandidatePath, { force: true });
-          const generation = await this.generateValidatedNativeAsset({
-            spec: retrySpec,
-            outputPath: retryCandidatePath,
-            productImages,
-            task,
-            invalidDir: path.join(rawDir, "invalid-native"),
-            attemptNumber: 200 + item.index,
-            aiEchoLedger: job.aiEchoLedger,
-            forceNewSubmission: Boolean(job.aiEchoLedger)
-          });
-          if (!generation.quality.passed) throw new Error(generation.quality.warnings.join("; "));
-          if (!job.aiEchoLedger) {
-            await copyFileWithAtomicReplace(retryCandidatePath, job.outputPath);
-            await fs.rm(retryCandidatePath, { force: true });
+      const retryVisualItems = async (
+        items: typeof visualRetryItems,
+        round: 1 | 2
+      ): Promise<void> => {
+        await mapLimitedSettled(
+          items,
+          visualRetryConcurrency,
+          async (item) => {
+            const job = jobs.find((candidate) => candidate.spec.role === item.role && candidate.spec.index === item.index);
+            if (!job) throw new Error(`未找到质检返工图片：${item.role}-${item.index}`);
+            const retrySpec: NativeImageSpec = {
+              ...job.spec,
+              prompt: buildVisualReviewRetryPrompt(job.spec, item.reasons, round)
+            };
+            // aiEcho validates job.outputPath.part and atomically swaps it into
+            // job.outputPath, so the accepted original survives until the new
+            // candidate passes every check. Other providers retain the separate
+            // reviewed candidate plus an atomic copy into the formal path.
+            const retryCandidatePath = job.aiEchoLedger
+              ? job.outputPath
+              : path.join(
+                rawDir,
+                `visual-review-${retrySpec.role}-${pad(retrySpec.index)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`
+              );
+            if (!job.aiEchoLedger) await fs.rm(retryCandidatePath, { force: true });
+            const generation = await this.generateValidatedNativeAsset({
+              spec: retrySpec,
+              outputPath: retryCandidatePath,
+              productImages,
+              task,
+              invalidDir: path.join(rawDir, "invalid-native"),
+              attemptNumber: (round === 1 ? 200 : 300) + item.index,
+              aiEchoLedger: job.aiEchoLedger,
+              forceNewSubmission: Boolean(job.aiEchoLedger)
+            });
+            if (!generation.quality.passed) throw new Error(generation.quality.warnings.join("; "));
+            if (!job.aiEchoLedger) {
+              await copyFileWithAtomicReplace(retryCandidatePath, job.outputPath);
+              await fs.rm(retryCandidatePath, { force: true });
+            }
+            return { job, retrySpec, generation };
+          },
+          async (item, result) => {
+            progress.qualityRetryCompleted = (progress.qualityRetryCompleted ?? 0) + 1;
+            if (result.status === "fulfilled") {
+              const { job, retrySpec, generation } = result.value;
+              const collection = retrySpec.role === "main" ? mainImages : detailImages;
+              const existingIndex = collection.findIndex((asset) => asset.index === retrySpec.index);
+              if (existingIndex >= 0) collection.splice(existingIndex, 1);
+              await registerRecoveredNativeAsset({ ...job, spec: retrySpec }, generation, generation.attempts + 1);
+              updatePromptRecord(job.spec, { status: "completed", attempts: generation.attempts + 1, error: undefined });
+              await persistPromptRecords();
+              console.log(`[native-image] visual review retry round=${round} completed ${nativeImageJobLabel(job.spec)}`);
+            } else {
+              console.warn(`[native-image] visual review retry round=${round} failed ${item.role}-${item.index}: ${errorMessage(result.reason)}`);
+            }
+            publishProgress("quality-retry", `后台质检返工 ${progress.qualityRetryCompleted}/${progress.qualityRetryTotal}。`);
           }
-          return { job, retrySpec, generation };
-        },
-        async (item, result) => {
-          progress.qualityRetryCompleted = (progress.qualityRetryCompleted ?? 0) + 1;
-          if (result.status === "fulfilled") {
-            const { job, retrySpec, generation } = result.value;
-            const collection = retrySpec.role === "main" ? mainImages : detailImages;
-            const existingIndex = collection.findIndex((asset) => asset.index === retrySpec.index);
-            if (existingIndex >= 0) collection.splice(existingIndex, 1);
-            await registerRecoveredNativeAsset({ ...job, spec: retrySpec }, generation, generation.attempts + 1);
-            updatePromptRecord(job.spec, { status: "completed", attempts: generation.attempts + 1, error: undefined });
-            await persistPromptRecords();
-            console.log(`[native-image] visual review retry completed ${nativeImageJobLabel(job.spec)}`);
-          } else {
-            console.warn(`[native-image] visual review retry failed ${item.role}-${item.index}: ${errorMessage(result.reason)}`);
-          }
-          publishProgress("quality-retry", `后台质检返工 ${progress.qualityRetryCompleted}/${progress.qualityRetryTotal}。`);
-        }
-      );
+        );
+      };
+      await retryVisualItems(visualRetryItems, 1);
       visualAudit = await this.auditGeneratedNativeOutput(task, productImages, selectedSpecs, [...mainImages, ...detailImages]);
+      const textBoundaryRetryItems = visualAudit.items.filter(isTextBoundaryGeneratedVisualAuditFailure);
+      if (textBoundaryRetryItems.length) {
+        progress.qualityRetryTotal = (progress.qualityRetryCompleted ?? visualRetryItems.length) + textBoundaryRetryItems.length;
+        publishProgress("quality-retry", `仍有 ${textBoundaryRetryItems.length} 张文字触边，正在进行保守版式修复。`, {
+          concurrency: visualRetryConcurrency,
+          qualityRetryTotal: progress.qualityRetryTotal,
+          qualityRetryCompleted: progress.qualityRetryCompleted ?? visualRetryItems.length
+        });
+        await retryVisualItems(textBoundaryRetryItems, 2);
+        visualAudit = await this.auditGeneratedNativeOutput(task, productImages, selectedSpecs, [...mainImages, ...detailImages]);
+      }
     }
     const visualFailures = visualAudit.items.filter((candidate) => !candidate.passed);
     if (visualFailures.length && outputVisualAuditStrict()) {
@@ -2305,6 +2378,8 @@ function buildGeneratedVisualAuditPrompt(task: ProductTask, specs: NativeImageSp
     "sceneDistinct: this output has a materially different composition, action or visual evidence from the other outputs, not only a changed caption or background.",
     "artDirectionMatch: the actual output follows the selected platform's visual intent, hierarchy, restraint/richness and material finish rather than looking like a generic poster.",
     "copyLanguageCorrect: all newly rendered marketing copy uses the selected output language consistently; original product/packaging/logo text is exempt.",
+    "Text boundary is a mandatory pass condition under artDirectionMatch: inspect every visible character, punctuation mark, badge and text backing panel at all four canvas edges. Any partial glyph, clipped stroke, cropped word, text touching/crossing the edge, or text backing panel extending outside the canvas makes passed=false and artDirectionMatch=false.",
+    "For every text boundary failure, begin the first reason with exactly TEXT_BOUNDARY_VIOLATION: and describe the affected edge and text region. Severe gibberish or unreadable broken marketing text also fails copyLanguageCorrect, but do not confuse harmless original packaging microtext with newly rendered marketing copy.",
     "A product may be a small supporting element when the selling point is better proved by a battery, language classroom, storage diagram, material close-up or other relevant evidence. Do not require the product to appear in every frame.",
     `product name: ${task.productName || "not provided"}`,
     `user selling points: ${promptSellingPoints(task) || "not provided"}`,
@@ -2695,6 +2770,14 @@ function nativeImageJobRetryDelayMs(provider: string, error: unknown, schedulerA
 
 function nativeImageRecoveryConcurrency(): number {
   return readPositiveIntegerEnv("IMAGE_RECOVERY_CONCURRENCY", 2, 1, 4);
+}
+
+function nativeImageFullFailureProbeEnabled(): boolean {
+  return !/^(0|false|no|off)$/i.test(String(process.env.IMAGE_FULL_FAILURE_PROBE_ENABLED || "true").trim());
+}
+
+function nativeImageFullFailureProbeDelayMs(): number {
+  return readNonNegativeIntegerEnv("IMAGE_FULL_FAILURE_PROBE_DELAY_MS", 15_000, 0, 90_000);
 }
 
 function nativeImageVisualRetryConcurrency(): number {
@@ -5947,7 +6030,7 @@ function productContext(task: ProductTask): ProductContext {
   const isBikeBasket = /(电动车|自行车|车篮|篮筐|前篮|后篮|骑行|bike basket|bicycle basket|e-bike basket)/i.test(identityText);
   const isAiRobot = identity.id === "ai-robot";
   const isChildProduct = /(儿童|孩子|宝宝|幼儿|小孩|童)/.test(identityText) && !isIntimateApparel;
-  const isEnglishMarketplace = /^English$/i.test(String(task.outputLanguage || "").trim()) || isEnglishMarketplaceTaskText(text);
+  const isEnglishMarketplace = usesEnglishLanguageBaseline(task.outputLanguage) || isEnglishMarketplaceTaskText(text);
   return {
     text,
     isChildProduct,
@@ -5998,53 +6081,18 @@ function isEnglishMarketplaceTaskText(text: string): boolean {
 }
 
 function buildPlatformRule(task: ProductTask): string {
-  const platform = task.targetPlatform || "淘宝/天猫";
+  const profile = platformStyleProfile(task.targetPlatform, "国内通用")!;
+  const platform = profile.label;
   const outputLanguage = task.outputLanguage || (isEnglishMarketplaceTaskText(task.languageRuleText || "") ? "English" : "简体中文");
-  const platformText = [
-    task.targetPlatform,
-    task.outputLanguage,
-    task.notes,
-    promptSellingPoints(task),
-    task.category,
-    task.platformRuleProfile,
-    task.platformRuleName,
-    task.platformRuleReason,
-    task.platformRuleText,
-    task.languageRuleProfile,
-    task.languageRuleName,
-    task.languageRuleReason,
-    task.generationRuleProfile,
-    task.generationRuleName,
-    task.generationRuleReason,
-    task.generationRuleText
-  ].join(" ");
-  if (isAmazonPlatformTask(task)) {
-    return [
-      "目标平台：Amazon marketplace product images.",
-      `输出语言：${outputLanguage}`,
-      "平台风格：clean product clarity, feature proof, lifestyle credibility, restrained layout, and purchase confidence.",
-      "Language note: visible marketing copy language is controlled by the output language field, not by Amazon platform style.",
-      "Common quality note: Amazon style must still follow the public core rules for distinct product forms, distinct proof methods, non-repeated compositions, and benefit-led scene design.",
-      "Design goal: clean product clarity, feature proof, lifestyle credibility, and purchase confidence.",
-      "Do not use Taobao/Tmall/Douyin/Xiaohongshu visual language, Chinese default platform labels, fake ratings, review stars, Best Seller badges, prices, sales volume, platform watermarks, or unsupported certification claims."
-    ].join("\n");
-  }
-  if (isEnglishMarketplaceTaskText(platformText)) {
-    return [
-      `目标平台：${platform}移动端电商图。`,
-      `输出语言：${outputLanguage}`,
-      "平台风格：按目标平台执行，不因为 English 输出而自动切换成 Amazon 风格。",
-      "可见营销文案必须服从输出语言，构图密度和平台禁用项仍按目标平台规则执行。"
-    ].join("\n");
-  }
-  const focus = /抖音/.test(platform)
-    ? "强情绪价值、强转化、首秒抓眼"
-    : /小红书/.test(platform)
-      ? "场景种草、生活方式、氛围可信"
-      : /京东/.test(platform)
-        ? "信息清楚、品质可信、决策效率高"
-        : "货架点击、品牌质感、移动端高转化";
-  return `目标平台：${platform}移动端电商图，兼容淘宝/天猫/京东/抖音/小红书货架浏览；输出语言：${outputLanguage}；设计目标是${focus}。`;
+  return [
+    `目标平台：${platform}（${profile.promptName}）。`,
+    `输出语言：${outputLanguage}。`,
+    `平台视觉合同：${profile.generatorStyle}。`,
+    `平台执行重点：${profile.briefNote}`,
+    `平台禁用项：${profile.bannedElements}。`,
+    "语言与平台严格解耦：所有新增可见营销文案只服从输出语言；不得因为平台所在国家或地区自动切换语言。",
+    "公共质量规则不因平台变化：套图仍须使用不同产品形态、不同证明方式、不同构图和独立卖点。",
+  ].join("\n");
 }
 
 function buildEcommerceLogicRule(context: ProductContext): string {
@@ -8588,12 +8636,14 @@ function applyEnglishVisibleCopyContract(
   specs: string[]
 ): NativeImageSpec[] {
   const plan = buildEnglishMarketplaceCopyPlan(task, points, specs, productContext(task));
+  const language = outputLanguagePromptName(task.outputLanguage, "简体中文");
+  const requiresLocalization = language !== "English";
   return specsToLocalize.map((spec) => {
     const copy = spec.role === "main" ? plan.main[spec.index - 1] : plan.detail[spec.index - 1];
     const safeCopy = (copy || []).map(cleanEnglishVisibleCopy).filter(Boolean);
     const promptWithoutOldCopy = spec.prompt
       .split(/\r?\n/)
-      .filter((line) => !/营销文案只允许出现以下指定文字|文字层级：第[123]句|其余指定文字/.test(line))
+      .filter((line) => !/营销文案只允许出现以下指定文字|文字层级：第[123]句|其余指定文字|Visible marketing copy may only use the following exact English text|English visible-copy override/.test(line))
       .join("\n");
     const aspectRatio = spec.aspectRatio;
     return {
@@ -8601,12 +8651,50 @@ function applyEnglishVisibleCopyContract(
       copy: safeCopy,
       prompt: [
         promptWithoutOldCopy,
-        "English visible-copy override (highest priority): all newly added visible marketing copy must use only the exact English lines below. Chinese scene directions are internal instructions and must never be rendered as visible text.",
+        requiresLocalization
+          ? `${language} localization override (highest priority): reuse the English copy plan only as an internal meaning source. Translate it naturally, and render newly added visible marketing copy in ${language} only. Never render the English source or Chinese scene directions.`
+          : "English visible-copy override (highest priority): all newly added visible marketing copy must use only the exact English lines below. Chinese scene directions are internal instructions and must never be rendered as visible text.",
         buildTypographyCompositionRule(safeCopy, spec.title, aspectRatio),
-        exactCopyInstruction(safeCopy)
+        localizedCopyInstruction(task, safeCopy)
       ].join("\n")
     };
   });
+}
+
+export function buildVisualReviewRetryPrompt(
+  spec: Pick<NativeImageSpec, "prompt" | "auditSummary">,
+  reasons: string[],
+  round: 1 | 2 = 1
+): string {
+  const boundaryFailure = reasons.some((reason) =>
+    /TEXT_BOUNDARY_VIOLATION|text[^.;。；]*(?:clipp|crop|cut[ -]?off|truncat|outside|edge)|文字[^。；]*(?:贴边|截断|截取|裁切|越界|出框|超出|边缘)/i.test(reason)
+  );
+  const boundaryRepair = boundaryFailure
+    ? round === 2
+      ? "CONSERVATIVE TEXT-LAYOUT REPAIR (highest priority): abandon the rejected edge composition. Move all newly rendered marketing copy to one calm top-left or left-side text group. Keep its full bounding box inside x=15%-85% and y=12%-88%, left-align every line, and limit the group to 36% of canvas width. Reduce headline size and wrap only at semantic phrase boundaries. Preserve every approved character exactly. No glyph, punctuation, badge, or backing panel may touch or cross any canvas edge. Do not repeat the previous right-edge placement."
+      : "TEXT-SAFE REPAIR (highest priority): move the complete marketing text group inside x=12%-88% and y=10%-90% of the canvas. Keep the group at no more than 42% of canvas width and left-align it even when placed on the right side. Wrap long headlines at semantic phrase boundaries and reduce type size as needed. Preserve every approved character exactly; no glyph, punctuation, badge, or backing panel may be clipped, truncated, squeezed, or touch any canvas edge."
+    : "";
+  return [
+    spec.prompt,
+    "",
+    `VISUAL REVIEW RETRY ROUND ${round}:`,
+    "The retry must still execute this exact plan:",
+    spec.auditSummary || "Use the current frame mission above.",
+    boundaryRepair,
+    "Change the composition, product state, camera or action as needed to directly prove the selling point. Do not repeat the rejected scene.",
+    `Review notes: ${reasons.join("; ")}`
+  ].filter(Boolean).join("\n");
+}
+
+function localizedCopyInstruction(task: ProductTask, englishSourceCopy: string[]): string {
+  const language = outputLanguagePromptName(task.outputLanguage, "简体中文");
+  if (language === "English") return exactCopyInstruction(englishSourceCopy);
+  const source = englishSourceCopy.map((line) => line.trim()).filter(Boolean);
+  return [
+    `English localization source (internal only; do not render): ${source.map((line) => `"${line}"`).join(", ")}.`,
+    outputLanguageInstruction(task.outputLanguage),
+    `Preserve the source meaning and claim strength, but rewrite it as concise, idiomatic ${language} ecommerce copy. Do not add facts, numbers, certifications, prices, ratings, or claims that are absent from the English source.`,
+  ].join(" ");
 }
 
 function buildGenericDetailSpecs(
@@ -9840,6 +9928,7 @@ function reviewAsset(
   const isMain = asset.role === "main";
   const context = productContext(task);
   const isEnglishMarketplace = context.isEnglishMarketplace;
+  const outputLanguageName = outputLanguagePromptName(task.outputLanguage, "简体中文");
   const imageResolution = imageResolutionProfileForTask(task);
   const imageAspectRatioProfile = imageAspectRatioProfileForTask(task);
   const expectedRatio = aspectRatioForRole(imageAspectRatioProfile, asset.role);
@@ -9929,7 +10018,7 @@ function reviewAsset(
       evidence: task.bannedElements || "使用默认禁用项。"
     }
   ];
-  if (isEnglishMarketplace) {
+  if (isEnglishMarketplace && outputLanguageName === "English") {
     const allowedCopy = extractAllowedVisibleCopy(prompt);
     checks.push(
       {
@@ -9943,6 +10032,24 @@ function reviewAsset(
         label: "英文可见文案无中文和内部字段",
         passed: allowedCopy.length > 0 && allowedCopy.every((line) => cleanEnglishVisibleCopy(line) === line),
         evidence: allowedCopy.join(" | ") || "未解析到英文可见文案白名单。"
+      }
+    );
+  } else if (isEnglishMarketplace) {
+    const allowedCopy = extractAllowedVisibleCopy(prompt);
+    checks.push(
+      {
+        id: "localized-language-rule",
+        label: `${outputLanguageName} 语言规则进入提示词`,
+        passed: prompt.includes(`Language: ${outputLanguageName}`)
+          && prompt.includes("English localization source")
+          && /never render|Never render/.test(prompt),
+        evidence: `检查 English 分镜基线是否只作为内部语义源，最终可见文案是否锁定为 ${outputLanguageName}。`
+      },
+      {
+        id: "localized-source-copy-clean",
+        label: "本地化源文案无中文和内部字段",
+        passed: allowedCopy.length > 0 && allowedCopy.every((line) => cleanEnglishVisibleCopy(line) === line),
+        evidence: allowedCopy.join(" | ") || "未解析到 English 本地化源文案。"
       }
     );
   } else {
@@ -10010,6 +10117,12 @@ export function extractAllowedVisibleCopy(prompt: string): string[] {
   const compactMatch = prompt.match(/Use only these approved marketing lines:\s*([^\n]+)/i);
   if (compactMatch) {
     return [...compactMatch[1].matchAll(/[“"]([^”"]+)[”"]/g)]
+      .map((match) => match[1].trim())
+      .filter(Boolean);
+  }
+  const localizationMatch = prompt.match(/English localization source[^:]*:\s*([^\n]+)/i);
+  if (localizationMatch) {
+    return [...localizationMatch[1].matchAll(/[“"]([^”"]+)[”"]/g)]
       .map((match) => match[1].trim())
       .filter(Boolean);
   }

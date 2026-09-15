@@ -20,9 +20,12 @@
   },
   "files": [
     "src/types/global.d.ts",
-    "src/api/bge/task.ts"
-    ,"src/views/bge/task/index.vue"
-    ,"src/views/bge/task/AuthenticatedImage.vue"
+    "src/api/bge/task.ts",
+    "src/api/bge/points.ts",
+    "src/views/bge/task/index.vue",
+    "src/views/bge/task/AuthenticatedImage.vue",
+    "src/views/bge/points/index.vue"
+    ,"src/views/system/user/account-levels.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

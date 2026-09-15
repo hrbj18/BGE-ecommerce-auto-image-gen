@@ -81,9 +81,9 @@ test("disk guard reports minimum space and rejects insufficient storage", async 
   ));
 });
 
-test("write authorization is open by default and retained token mode protects LAN writes", () => {
+test("write authorization always requires the internal proxy token", () => {
   const lanRequest = fakeRequest({ remoteAddress: "127.0.0.1", forwardedFor: "192.168.1.20", origin: "http://192.168.1.10:5173", forwardedHost: "192.168.1.10:5173" });
-  assert.equal(authorizeWriteRequest(lanRequest as never, "").ok, true);
+  assert.equal(authorizeWriteRequest(lanRequest as never, "").ok, false);
   assert.equal(authorizeWriteRequest(lanRequest as never, "", "token").ok, false);
   assert.equal(authorizeWriteRequest(lanRequest as never, "secret", "token").ok, false);
   lanRequest.headers.authorization = "Bearer secret";

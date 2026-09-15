@@ -15,7 +15,15 @@ public final class BgeDtos
     }
 
     public record Health(String status, String state, String service, long uptimeSeconds,
-            int activeJobs, String activeJobId, String activePhase, boolean acceptingJobs, Disk disk)
+            int activeJobs, String activeJobId, String activePhase, boolean acceptingJobs,
+            int recoveryQueueSize, Resilience resilience, Disk disk)
+    {
+    }
+
+    public record Resilience(int taskCount, int terminalTaskCount, int activeTaskCount,
+            int attemptCount, double firstPassSuccessRate,
+            int recoveredTaskCount, double completeSuccessRate, double retryRate,
+            long p95AttemptDurationMs, int capacityEventCount, int rateLimitEventCount)
     {
     }
 
@@ -33,7 +41,7 @@ public final class BgeDtos
             String outputLanguage, String suiteRatio, String generationProfileId,
             String imageAspectRatioProfileId, String imageResolutionId, String imageResolutionLabel, int mainImageCount,
             int detailImageCount, boolean promptAvailable, boolean promptComplete,
-            String outputProductName, String outputDisplayName, boolean hasOutput, int eventCount,
+            String outputProductName, String outputDisplayName, boolean hasOutput, boolean canRetry, int eventCount,
             Event latestEvent)
     {
     }
@@ -44,7 +52,7 @@ public final class BgeDtos
             String outputLanguage, String suiteRatio, String generationProfileId,
             String imageAspectRatioProfileId, String imageResolutionId, String imageResolutionLabel, int mainImageCount,
             int detailImageCount, boolean promptAvailable, boolean promptComplete,
-            String outputProductName, String outputDisplayName, boolean hasOutput, int eventCount,
+            String outputProductName, String outputDisplayName, boolean hasOutput, boolean canRetry, int eventCount,
             Event latestEvent, List<Event> events, Output output)
     {
     }

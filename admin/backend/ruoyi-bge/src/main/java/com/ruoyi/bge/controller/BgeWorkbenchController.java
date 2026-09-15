@@ -115,7 +115,7 @@ public class BgeWorkbenchController
         if ("POST".equals(method))
         {
             return "/api/jobs".equals(path) || "/api/brief-expansions".equals(path)
-                    || path.matches("^/api/jobs/[^/]+/cancel$")
+                    || path.matches("^/api/jobs/[^/]+/(?:cancel|retry)$")
                     || path.matches("^/api/outputs/[^/]+/download$");
         }
         return "DELETE".equals(method) && path.matches("^/api/(?:tasks|outputs)/[^/]+$");

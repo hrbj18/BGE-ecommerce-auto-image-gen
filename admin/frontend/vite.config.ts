@@ -5,7 +5,7 @@ import createVitePlugins from './vite/plugins'
 const backendPort = process.env.RUOYI_SERVER_PORT || '18080'
 const baseUrl = `http://127.0.0.1:${backendPort}` // 本机若依后端接口
 const workbenchUrl = 'http://127.0.0.1:8002' // 仅供若依页面反向代理的本机作图前端
-const portalUrl = 'http://127.0.0.1:8003' // 仅供用户端门户反向代理的本机 React 前端
+const portalUrl = 'http://127.0.0.1:8003' // 用户登录门户，同时保留 8001 旧路径兼容代理
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode, command }) => {
@@ -45,8 +45,7 @@ export default defineConfig(({ mode, command }) => {
     },
     // vite 相关配置
     server: {
-      // 8001 是用户唯一需要在浏览器访问的本机入口。其余端口都只在
-      // 回环地址上作为内部组件使用，不能当成用户访问地址。
+      // 管理后台使用 8001；普通用户从独立的 8003 门户登录。
       port: 8001,
       host: '127.0.0.1',
       open: false,
@@ -83,9 +82,8 @@ export default defineConfig(({ mode, command }) => {
             .replace(/^\/portal-media\/o\//, '/portal-api/outputs/')
             .replace(/^\/portal-media\/e\//, '/portal-api/example-assets/')
         },
-        // 自助用户端和管理后台属于不同权限边界。门户始终经 8001
-        // 访问，8003 只在回环地址上渲染 React 页面。这个规则必须放
-        // 在门户 API 规则之后，避免 /portal-api 被页面代理截获。
+        // 保留旧 8001/portal/ 地址的兼容代理；正式门户入口为 8003。
+        // 这个规则必须放在门户 API 规则之后，避免 API 被页面代理截获。
         '/portal': {
           target: portalUrl,
           changeOrigin: true,

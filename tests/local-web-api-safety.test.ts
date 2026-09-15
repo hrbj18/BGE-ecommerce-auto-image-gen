@@ -37,6 +37,7 @@ test("isolated API admits one workflow, deduplicates retries, rejects bad upload
       LOCAL_WEB_TEST_WORKFLOW_MODE: "hang",
       LOCAL_WEB_TEST_MARKER: marker,
       LOCAL_WEB_WORKFLOW_TIMEOUT_MS: "3000",
+      LOCAL_WEB_AUTO_RECOVERY_ENABLED: "false",
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
@@ -56,12 +57,16 @@ test("isolated API admits one workflow, deduplicates retries, rejects bad upload
   const health = await healthResponse.json() as {
     state: string;
     accessMode: string;
+    platformStyleProfiles: Array<{ id: string; label: string }>;
     generationProfiles: Array<{ id: string }>;
     imageAspectRatioProfiles: Array<{ id: string }>;
     imageResolutionProfiles: Array<{ id: string }>;
   };
   assert.equal(health.state, "ready");
   assert.equal(health.accessMode, "token");
+  assert.deepEqual(health.platformStyleProfiles.map((profile) => profile.label), [
+    "国内通用", "国外通用",
+  ]);
   assert.deepEqual(health.generationProfiles.map((profile) => profile.id), [
     "standard-5-8",
     "compact-1-2",
@@ -140,6 +145,16 @@ test("isolated API admits one workflow, deduplicates retries, rejects bad upload
   assert.equal(invalidAspectRatio.status, 400, invalidAspectRatioPayload.error);
   assert.equal(invalidAspectRatioPayload.code, "IMAGE_ASPECT_RATIO_INVALID");
 
+  const invalidLanguage = await submitJob(baseUrl, "invalid-language", "compact-1-2", "语言校验商品", "1k", "ecommerce-standard", "Klingon");
+  const invalidLanguagePayload = await invalidLanguage.json() as { error?: string };
+  assert.equal(invalidLanguage.status, 400, invalidLanguagePayload.error);
+  assert.match(invalidLanguagePayload.error || "", /不支持的输出语言/);
+
+  const invalidPlatform = await submitJob(baseUrl, "invalid-platform", "compact-1-2", "平台校验商品", "1k", "ecommerce-standard", "简体中文", "Unknown Marketplace");
+  const invalidPlatformPayload = await invalidPlatform.json() as { code?: string; error?: string };
+  assert.equal(invalidPlatform.status, 400, invalidPlatformPayload.error);
+  assert.equal(invalidPlatformPayload.code, "TARGET_PLATFORM_INVALID");
+
   const invalidExpansionForm = new FormData();
   invalidExpansionForm.append("productName", "扩写比例校验商品");
   invalidExpansionForm.append("imageAspectRatioProfileId", "arbitrary-ratio");
@@ -214,7 +229,152 @@ test("isolated API admits one workflow, deduplicates retries, rejects bad upload
   assert.equal(finalHealth.activeJobs, 0);
 });
 
-test("default access mode reports off and allows direct LAN writes without a token", { timeout: 20_000 }, async (t) => {
+test("temporary capacity failure is persisted, retried, failed over, and reported in resilience metrics", { timeout: 20_000 }, async (t) => {
+  const context = await startModeServer(t, "fail-then-complete", {
+    IMAGE_PROVIDER: "openai",
+    IMAGE_PROVIDER_FAILOVER_ORDER: "openai,aiecho",
+    OPENAI_API_KEY: "test-openai-key",
+    AIECHO_ACTIVATION_CODE: "test-aiecho-key",
+    LOCAL_IMAGE_TEST_MODE: "1",
+    LOCAL_WEB_RECOVERY_DELAYS_MS: "25,50,100",
+    IMAGE_PROVIDER_CIRCUIT_FAILURE_THRESHOLD: "1",
+    IMAGE_PROVIDER_CIRCUIT_COOLDOWN_MS: "1000",
+  });
+  const response = await submitJob(context.baseUrl, "automatic-resilience", "compact-1-2");
+  assert.equal(response.status, 202, context.output());
+  const accepted = await response.json() as { id: string };
+  const completed = await waitForJob(context.baseUrl, accepted.id, ["done"]);
+  assert.equal(completed.status, "done");
+  const attempts = (await fs.readFile(context.marker, "utf8")).trim().split(/\r?\n/);
+  assert.equal(attempts.length, 2, context.output());
+  assert.match(attempts[0], /\|openai$/);
+  assert.match(attempts[1], /\|aiecho$/);
+
+  const health = await fetch(`${context.baseUrl}/health`).then((item) => item.json()) as {
+    resilience: { recoveredTaskCount: number; capacityEventCount: number; byProvider: Record<string, { total: number }> };
+  };
+  assert.equal(health.resilience.recoveredTaskCount, 1);
+  assert.equal(health.resilience.capacityEventCount, 1);
+  assert.equal(health.resilience.byProvider.openai.total, 1);
+  assert.equal(health.resilience.byProvider.aiecho.total, 1);
+});
+
+test("manual retry continues the same task and does not create a duplicate top-level job", { timeout: 20_000 }, async (t) => {
+  const context = await startModeServer(t, "fail-then-complete", {
+    LOCAL_WEB_AUTO_RECOVERY_ENABLED: "false",
+    LOCAL_IMAGE_TEST_MODE: "1",
+  });
+  const response = await submitJob(context.baseUrl, "manual-resilience", "compact-1-2");
+  const accepted = await response.json() as { id: string };
+  const failed = await waitForJob(context.baseUrl, accepted.id, ["failed"]);
+  assert.equal(failed.status, "failed");
+
+  const retry = await authorizedFetch(`${context.baseUrl}/api/jobs/${encodeURIComponent(accepted.id)}/retry`, { method: "POST" });
+  assert.equal(retry.status, 202, await retry.text());
+  const completed = await waitForJob(context.baseUrl, accepted.id, ["done"]);
+  assert.equal(completed.status, "done");
+  const tasks = await fetch(`${context.baseUrl}/api/tasks`).then((item) => item.json()) as { tasks: Array<{ id: string }> };
+  assert.deepEqual(tasks.tasks.map((task) => task.id), [accepted.id]);
+  assert.equal(await markerLines(context.marker), 2);
+});
+
+test("manual retry starts a recovery-wait task immediately", { timeout: 20_000 }, async (t) => {
+  const context = await startModeServer(t, "fail-then-complete", {
+    LOCAL_IMAGE_TEST_MODE: "1",
+    LOCAL_WEB_RECOVERY_DELAYS_MS: "10000",
+  });
+  const response = await submitJob(context.baseUrl, "manual-waiting-resilience", "compact-1-2");
+  const accepted = await response.json() as { id: string };
+  await waitForJob(context.baseUrl, accepted.id, ["recovery-wait"]);
+
+  const retry = await authorizedFetch(`${context.baseUrl}/api/jobs/${encodeURIComponent(accepted.id)}/retry`, { method: "POST" });
+  assert.equal(retry.status, 202, await retry.text());
+  const completed = await waitForJob(context.baseUrl, accepted.id, ["done"]);
+
+  assert.equal(completed.status, "done");
+  assert.equal(await markerLines(context.marker), 2);
+});
+
+test("cancel stops a queued automatic recovery", { timeout: 20_000 }, async (t) => {
+  const context = await startModeServer(t, "always-fail", {
+    LOCAL_IMAGE_TEST_MODE: "1",
+    LOCAL_WEB_RECOVERY_DELAYS_MS: "10000",
+  });
+  const response = await submitJob(context.baseUrl, "cancel-waiting-resilience", "compact-1-2");
+  const accepted = await response.json() as { id: string };
+  await waitForJob(context.baseUrl, accepted.id, ["recovery-wait"]);
+
+  const cancel = await authorizedFetch(`${context.baseUrl}/api/jobs/${encodeURIComponent(accepted.id)}/cancel`, { method: "POST" });
+  const cancelled = await cancel.json() as { status: string };
+
+  assert.equal(cancel.status, 200);
+  assert.equal(cancelled.status, "cancelled");
+  await delay(150);
+  assert.equal(await markerLines(context.marker), 1);
+});
+
+test("a persisted running task resumes after an ungraceful Node restart", { timeout: 25_000 }, async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bge-local-web-restart-"));
+  const inputRoot = path.join(tempRoot, "input");
+  const outputRoot = path.join(tempRoot, "output");
+  const stateRoot = path.join(tempRoot, "state");
+  const marker = path.join(tempRoot, "workflow-starts.txt");
+  await Promise.all([fs.mkdir(inputRoot), fs.mkdir(outputRoot), fs.mkdir(stateRoot)]);
+  const servers: ChildProcess[] = [];
+  t.after(async () => {
+    for (const server of servers) await stopServer(server);
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  });
+
+  const spawnServer = async () => {
+    const port = await availablePort();
+    const server = spawn(process.execPath, ["scripts/local-web-server.mjs"], {
+      cwd: projectRoot,
+      env: {
+        ...process.env,
+        NODE_ENV: "test",
+        LOCAL_WEB_HOST: "127.0.0.1",
+        LOCAL_WEB_PORT: String(port),
+        LOCAL_WEB_INPUT_ROOT: inputRoot,
+        LOCAL_WEB_OUTPUT_ROOT: outputRoot,
+        LOCAL_WEB_STATE_ROOT: stateRoot,
+        LOCAL_WEB_ACCESS_MODE: "token",
+        LOCAL_WEB_ACCESS_TOKEN: "test-secret",
+        LOCAL_WEB_MIN_FREE_GB: "0.000001",
+        LOCAL_WEB_TEST_WORKFLOW_SCRIPT: "tests/fixtures/local-web-mock-workflow.mjs",
+        LOCAL_WEB_TEST_WORKFLOW_MODE: "interrupt-once",
+        LOCAL_WEB_TEST_MARKER: marker,
+        LOCAL_WEB_STARTUP_RECOVERY_DELAY_MS: "25",
+        LOCAL_WEB_RECOVERY_BUSY_DELAY_MS: "25",
+        LOCAL_IMAGE_TEST_MODE: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    servers.push(server);
+    let output = "";
+    server.stdout.on("data", (chunk) => { output += chunk.toString(); });
+    server.stderr.on("data", (chunk) => { output += chunk.toString(); });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    await waitForHealth(baseUrl, server, () => output);
+    return { server, baseUrl, output: () => output };
+  };
+
+  const first = await spawnServer();
+  const response = await submitJob(first.baseUrl, "restart-resilience", "compact-1-2");
+  const accepted = await response.json() as { id: string };
+  await waitForJob(first.baseUrl, accepted.id, ["running"]);
+  await delay(350);
+  first.server.kill("SIGKILL");
+  await new Promise<void>((resolve) => first.server.once("exit", () => resolve()));
+
+  const second = await spawnServer();
+  const completed = await waitForJob(second.baseUrl, accepted.id, ["done"]);
+  assert.equal(completed.status, "done", second.output());
+  assert.equal(await markerLines(marker), 2);
+});
+
+test("legacy off mode is locked and rejects direct writes without an internal token", { timeout: 20_000 }, async (t) => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bge-local-web-open-access-"));
   const inputRoot = path.join(tempRoot, "input");
   const outputRoot = path.join(tempRoot, "output");
@@ -249,12 +409,12 @@ test("default access mode reports off and allows direct LAN writes without a tok
   const baseUrl = `http://127.0.0.1:${port}`;
   await waitForHealth(baseUrl, server, () => output);
   const health = await fetch(`${baseUrl}/health`).then((response) => response.json()) as { accessMode: string };
-  assert.equal(health.accessMode, "off");
+  assert.equal(health.accessMode, "token");
   const lanDelete = await fetch(`${baseUrl}/api/tasks/not-found`, {
     method: "DELETE",
     headers: { "X-Forwarded-For": "192.168.1.25" },
   });
-  assert.equal(lanDelete.status, 404, output);
+  assert.equal(lanDelete.status, 503, output);
 });
 
 test("admin mode protects every Node read endpoint with the internal token", { timeout: 20_000 }, async (t) => {
@@ -410,6 +570,8 @@ async function submitJob(
   productName = "隔离测试商品",
   imageResolutionId = "",
   imageAspectRatioProfileId = "",
+  outputLanguage = "",
+  targetPlatform = "",
 ) {
   const png = await sharp({ create: { width: 16, height: 16, channels: 4, background: "#5588aa" } }).png().toBuffer();
   const form = new FormData();
@@ -420,6 +582,8 @@ async function submitJob(
   if (generationProfileId) form.append("generationProfileId", generationProfileId);
   if (imageResolutionId) form.append("imageResolutionId", imageResolutionId);
   if (imageAspectRatioProfileId) form.append("imageAspectRatioProfileId", imageAspectRatioProfileId);
+  if (outputLanguage) form.append("outputLanguage", outputLanguage);
+  if (targetPlatform) form.append("targetPlatform", targetPlatform);
   return authorizedFetch(`${baseUrl}/api/jobs`, { method: "POST", headers: { "X-Idempotency-Key": idempotencyKey }, body: form });
 }
 
@@ -427,6 +591,49 @@ async function timedSubmitJob(baseUrl: string, idempotencyKey: string) {
   const startedAt = performance.now();
   const response = await submitJob(baseUrl, idempotencyKey);
   return { response, elapsedMs: performance.now() - startedAt };
+}
+
+async function startModeServer(t: { after(callback: () => Promise<void>): void }, mode: string, extraEnvironment: NodeJS.ProcessEnv = {}) {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bge-local-web-resilience-"));
+  const inputRoot = path.join(tempRoot, "input");
+  const outputRoot = path.join(tempRoot, "output");
+  const stateRoot = path.join(tempRoot, "state");
+  const marker = path.join(tempRoot, "workflow-starts.txt");
+  await Promise.all([fs.mkdir(inputRoot), fs.mkdir(outputRoot), fs.mkdir(stateRoot)]);
+  const port = await availablePort();
+  const server = spawn(process.execPath, ["scripts/local-web-server.mjs"], {
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      NODE_ENV: "test",
+      LOCAL_WEB_HOST: "127.0.0.1",
+      LOCAL_WEB_PORT: String(port),
+      LOCAL_WEB_INPUT_ROOT: inputRoot,
+      LOCAL_WEB_OUTPUT_ROOT: outputRoot,
+      LOCAL_WEB_STATE_ROOT: stateRoot,
+      LOCAL_WEB_ACCESS_MODE: "token",
+      LOCAL_WEB_ACCESS_TOKEN: "test-secret",
+      LOCAL_WEB_REQUIRE_READ_TOKEN: "",
+      LOCAL_WEB_MIN_FREE_GB: "0.000001",
+      LOCAL_WEB_TEST_WORKFLOW_SCRIPT: "tests/fixtures/local-web-mock-workflow.mjs",
+      LOCAL_WEB_TEST_WORKFLOW_MODE: mode,
+      LOCAL_WEB_TEST_MARKER: marker,
+      LOCAL_WEB_WORKFLOW_TIMEOUT_MS: "5000",
+      ...extraEnvironment,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let serverOutput = "";
+  server.stdout.on("data", (chunk) => { serverOutput += chunk.toString(); });
+  server.stderr.on("data", (chunk) => { serverOutput += chunk.toString(); });
+  t.after(async () => {
+    await stopServer(server);
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  });
+  const baseUrl = `http://127.0.0.1:${port}`;
+  await waitForHealth(baseUrl, server, () => serverOutput);
+  return { baseUrl, marker, server, tempRoot, inputRoot, outputRoot, stateRoot, output: () => serverOutput };
 }
 
 function percentile(values: number[], quantile: number) {

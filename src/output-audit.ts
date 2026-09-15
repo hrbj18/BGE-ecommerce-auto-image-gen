@@ -115,6 +115,13 @@ export function isActionableGeneratedVisualAuditFailure(item: GeneratedVisualAud
   return !item.passed && !item.reasons.includes("The visual audit did not return this image.");
 }
 
+export function isTextBoundaryGeneratedVisualAuditFailure(item: GeneratedVisualAuditItem): boolean {
+  if (item.passed) return false;
+  return item.reasons.some((reason) =>
+    /TEXT_BOUNDARY_VIOLATION|text[^.;。；]*(?:clipp|crop|cut[ -]?off|truncat|outside|edge)|(?:clipp|crop|cut[ -]?off|truncat)[^.;。；]*text|文字[^。；]*(?:贴边|截断|截取|裁切|越界|出框|超出|边缘)|(?:贴边|截断|截取|裁切|越界|出框|超出画布)[^。；]*文字/i.test(reason)
+  );
+}
+
 function collectRawItems(root: Record<string, unknown>): unknown[] {
   for (const value of [root.items, root.outputs, root.results, root.images]) {
     if (Array.isArray(value)) return value;

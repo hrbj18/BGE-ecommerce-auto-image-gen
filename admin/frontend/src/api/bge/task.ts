@@ -112,6 +112,7 @@ export interface BgeTask {
   outputProductName?: string
   outputDisplayName?: string
   hasOutput?: boolean
+  canRetry?: boolean
   eventCount?: number
   latestEvent?: BgeTaskEvent | null
   events?: BgeTaskEvent[]
@@ -129,6 +130,20 @@ export interface BgeHealth {
   status?: string
   message?: string
   upstreamAvailable?: boolean
+  recoveryQueueSize?: number
+  resilience?: {
+    taskCount?: number
+    terminalTaskCount?: number
+    activeTaskCount?: number
+    attemptCount?: number
+    firstPassSuccessRate?: number
+    recoveredTaskCount?: number
+    completeSuccessRate?: number
+    retryRate?: number
+    p95AttemptDurationMs?: number
+    capacityEventCount?: number
+    rateLimitEventCount?: number
+  }
   [key: string]: unknown
 }
 
@@ -158,6 +173,13 @@ export function getBgeTask(taskId: string): Promise<BgeApiResult<BgeTask>> {
   return requestResult<BgeTask>({
     url: `/bge/tasks/${encodeURIComponent(taskId)}`,
     method: 'get'
+  })
+}
+
+export function retryBgeTask(taskId: string): Promise<BgeApiResult<BgeTask>> {
+  return requestResult<BgeTask>({
+    url: `/bge/tasks/${encodeURIComponent(taskId)}/retry`,
+    method: 'post'
   })
 }
 

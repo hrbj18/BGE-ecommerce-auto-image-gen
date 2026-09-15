@@ -132,6 +132,9 @@ h1 {
 }
 
 .portal-user-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   padding: 5px 8px;
   border-radius: 999px;
   color: #334155;
@@ -286,6 +289,8 @@ h1 {
 }
 
 .status-running,
+.status-recovering,
+.status-recovery-wait,
 .status-receiving,
 .status-submitting,
 .status-queued,
@@ -1077,6 +1082,8 @@ h1 {
 }
 
 .task-status-dot.status-running,
+.task-status-dot.status-recovering,
+.task-status-dot.status-recovery-wait,
 .task-status-dot.status-receiving,
 .task-status-dot.status-queued,
 .task-status-dot.status-submitting,
@@ -1588,6 +1595,189 @@ h1 {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 18px;
+}
+
+.portal-user-bar .portal-points-button {
+  color: #314600;
+  background: #eaff83;
+}
+
+.points-modal {
+  width: min(760px, 100%);
+  max-height: min(860px, calc(100vh - 48px));
+  overflow: hidden;
+  border: 1px solid #dfe5ef;
+  border-radius: 24px;
+  background: #fff;
+  box-shadow: 0 28px 90px rgba(15, 23, 42, 0.24);
+}
+
+.points-modal-body {
+  display: grid;
+  gap: 24px;
+  max-height: calc(100vh - 150px);
+  padding: 22px;
+  overflow-y: auto;
+}
+
+.points-balance-band {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 20px;
+  border-left: 4px solid #b7e800;
+  background: #f5fadf;
+}
+
+.points-balance-band > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.points-balance-band span,
+.points-balance-band small,
+.points-balance-band p {
+  color: #5c6678;
+  font-size: 13px;
+}
+
+.points-balance-band strong {
+  color: #18220a;
+  font-size: 34px;
+}
+
+.points-balance-band p {
+  margin: 0;
+}
+
+.points-section h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.points-price-table {
+  overflow: hidden;
+  border: 1px solid #e1e7ef;
+  border-radius: 8px;
+}
+
+.points-price-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) repeat(3, 70px);
+  align-items: center;
+  min-height: 42px;
+  padding: 0 14px;
+  border-top: 1px solid #edf0f4;
+  font-size: 13px;
+}
+
+.points-price-row:first-child {
+  border-top: 0;
+}
+
+.points-price-row strong,
+.points-price-row:not(.points-price-head) > span:not(:first-child) {
+  text-align: center;
+}
+
+.points-price-head {
+  color: #64748b;
+  background: #f7f9fc;
+  font-weight: 800;
+}
+
+.recharge-packages {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.recharge-packages button {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid #dbe2ed;
+  border-radius: 8px;
+  color: #334155;
+  background: #fff;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.recharge-packages button.active {
+  border-color: #9fc900;
+  color: #263900;
+  background: #efffae;
+}
+
+.recharge-submit-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.recharge-submit-row input {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #dbe2ed;
+  border-radius: 8px;
+}
+
+.points-ledger-list {
+  border-top: 1px solid #e5eaf1;
+}
+
+.points-ledger-list > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 48px;
+  border-bottom: 1px solid #e5eaf1;
+}
+
+.points-ledger-list span {
+  display: grid;
+  gap: 3px;
+}
+
+.points-ledger-list strong {
+  font-size: 13px;
+}
+
+.points-ledger-list small {
+  color: #7b8494;
+}
+
+.points-ledger-list b {
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.points-ledger-list b.credit {
+  color: #3b6800;
+}
+
+.points-ledger-list b.debit {
+  color: #b54708;
+}
+
+.empty-inline {
+  color: #7b8494;
+  font-size: 13px;
+}
+
+.task-board-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .task-board-header h3 {
@@ -3789,6 +3979,46 @@ h1 {
   .preview-column,
   .topbar {
     padding: 18px;
+  }
+
+  .header-actions,
+  .portal-user-bar {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .points-layer {
+    padding: 0;
+  }
+
+  .points-modal {
+    max-height: 100vh;
+    border-radius: 0;
+  }
+
+  .points-modal-body {
+    max-height: calc(100vh - 82px);
+    padding: 16px;
+  }
+
+  .points-balance-band,
+  .recharge-submit-row {
+    align-items: flex-start;
+    grid-template-columns: 1fr;
+  }
+
+  .points-balance-band {
+    flex-direction: column;
+  }
+
+  .points-price-row {
+    grid-template-columns: minmax(120px, 1fr) repeat(3, 48px);
+    padding: 0 8px;
+  }
+
+  .recharge-packages {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .upload-card,

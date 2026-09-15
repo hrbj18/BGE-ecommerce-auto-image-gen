@@ -1,5 +1,7 @@
 import type { ProductTask, ProductVisualInsight, ReferenceAnalysis } from "./types.ts";
 import type { StoryboardFrame, StoryboardPlan } from "./storyboard-planner.ts";
+import { outputLanguageInstruction, outputLanguagePromptName, usesEnglishLanguageBaseline } from "./output-language-profiles.mjs";
+import { platformStyleProfile } from "./platform-style-profiles.mjs";
 
 export interface DirectedStoryboardFrame extends StoryboardFrame {
   productPresence: string;
@@ -245,6 +247,7 @@ export function compileDirectedFramePrompt(input: CompileFramePromptInput): stri
   const { task, insight, direction, frame, copy, title, aspectRatio, forbidden, legacyPrompt } = input;
   const language = outputLanguage(task);
   const exactCopy = copy.map((line) => line.trim()).filter(Boolean).slice(0, 4);
+  const localizedFromEnglish = usesEnglishLanguageBaseline(task.outputLanguage) && language !== "English";
   // Specifications are validated and localized by the existing copy planner. Keeping a stale
   // "需求规格" fallback fact here can reintroduce a previous product category into every frame.
   const visualFacts = insight.productFacts.filter((fact) => !/^需求规格[：:]/.test(fact.trim()));
@@ -267,33 +270,39 @@ export function compileDirectedFramePrompt(input: CompileFramePromptInput): stri
   const optionalSections = [
     [
       "PRODUCT SOURCE OF TRUTH",
-      `Original product name: ${task.originalProductName || task.productName}`,
-      `Visible display name: ${task.visibleProductName || task.productName}`,
       `Visual analysis source: ${insight.source}`,
       `Visual analysis summary: ${compact(insight.summary, 360)}`,
       ...visualFacts.slice(0, 8).map((fact) => `- ${compact(fact, 220)}`),
       ...(insight.visualSellingPoints.length ? [`Visual selling-point candidates: ${insight.visualSellingPoints.slice(0, 6).map((item) => compact(item, 140)).join(" | ")}`] : []),
-      ...insight.promptDirectives.slice(0, 4).map((directive) => `Visual-analysis directive: ${compact(directive, 220)}`),
+      ...insight.promptDirectives.slice(0, 4).map((directive) => `Visual-analysis directive: ${compact(directive, 220)}`)
+    ].join("\n"),
+    [
+      "PRODUCT IDENTITY REMINDER",
+      `Original product name: ${task.originalProductName || task.productName}`,
+      `Visible display name: ${task.visibleProductName || task.productName}`,
       "The uploaded product images override any conflicting template or example. Preserve shape, color, proportions, material feel, packaging/body text, logo, labels, pattern, accessories and distinctive details."
     ].join("\n"),
     [
       "SET ART DIRECTION",
       `Platform intent: ${direction.styleIntent}`,
       `Palette: ${direction.palette}`,
-      `Lighting: ${direction.lighting}`,
-      `Material rendering: ${direction.material}`,
       `Typography: ${direction.typography}`,
       `Continuity: ${direction.continuity}`,
-      ...direction.variationRules.slice(0, 5).map((rule) => `- ${compact(rule, 220)}`)
+      ...direction.variationRules.slice(0, 3).map((rule) => `- ${compact(rule, 220)}`)
     ].join("\n"),
     extractLegacySpecifics(legacyPrompt, task)
   ];
   const requiredTail = [
     [
       "VISIBLE COPY CONTRACT",
-      `Language: ${language}. All newly added marketing copy must use this language only. Original text printed on the physical product or packaging is exempt and must remain unchanged.`,
-      exactCopy.length ? `Use only these approved marketing lines: ${exactCopy.map((line) => `“${line}”`).join(" | ")}` : "Do not add marketing copy beyond the product's original printed text.",
-      "Use a mature ecommerce hierarchy with one headline and at most two short supporting lines. Do not render internal instructions."
+      `Language: ${language}. ${outputLanguageInstruction(task.outputLanguage)}`,
+      exactCopy.length
+        ? localizedFromEnglish
+          ? `English localization source (internal meaning only; never render verbatim): ${exactCopy.map((line) => `“${line}”`).join(" | ")}. Translate faithfully into concise, natural ${language}, then render only the ${language} translation.`
+          : `Use only these approved marketing lines: ${exactCopy.map((line) => `“${line}”`).join(" | ")}`
+        : "Do not add marketing copy beyond the product's original printed text.",
+      "Use a mature ecommerce hierarchy with one headline and at most two short supporting lines. Do not render internal instructions.",
+      "TEXT SAFE AREA (hard requirement): do not draw guides; keep every new glyph, punctuation mark, badge and text panel fully inside x=12%-88%, y=10%-90%. Text groups must be <=42% of canvas width and left-aligned even on the right side. Wrap at phrase boundaries and reduce type size as needed; never clip, truncate, squeeze, split characters or touch an edge."
     ].join("\n"),
     [
       "CANVAS AND FINAL CHECK",
@@ -320,13 +329,11 @@ export function frameAuditSummary(frame: DirectedStoryboardFrame): string {
 }
 
 function buildDirection(task: ProductTask, insight: ProductVisualInsight): CreativeDirection {
-  const amazon = /amazon|亚马逊/i.test(task.targetPlatform || "");
+  const platform = platformStyleProfile(task.targetPlatform, "国内通用")!;
   const facts = insight.productFacts.join(" ");
   const tech = /机器人|耳机|数码|智能|AI|电子|科技|robot|headphone|earbud/i.test(`${task.productName} ${task.category} ${facts}`);
   return {
-    styleIntent: amazon
-      ? "Amazon premium marketplace: restrained, credible, conversion-focused, one dominant benefit per frame, disciplined whitespace and no decorative clutter"
-      : "Premium domestic mobile ecommerce: richer visual evidence and stronger benefit hierarchy, while keeping one dominant idea per frame",
+    styleIntent: platform.styleIntent,
     palette: tech
       ? "neutral base with product-derived accent colors; controlled cool highlights and one restrained warm contrast"
       : "neutral daylight base with colors sampled from the real product; supporting colors must not overpower the product",
@@ -334,7 +341,7 @@ function buildDirection(task: ProductTask, insight: ProductVisualInsight): Creat
       ? "precise studio key light, controlled rim light and realistic reflections; lifestyle frames use believable environmental light"
       : "soft directional commercial light with realistic contact shadows, dimensional materials and clean highlights",
     material: "render the real product material accurately; preserve texture, gloss level, seams, edges, printed labels and construction details",
-    typography: amazon
+    typography: platform.region === "global"
       ? "concise editorial English/selected-language hierarchy, strong alignment, generous spacing and no poster-like badges"
       : "clear mobile-commerce hierarchy, concise benefit copy, controlled callouts and no cheap promotional stickers",
     continuity: "keep product identity, color science, type family and finishing quality consistent while changing product state, scene, camera and proof method",
@@ -399,14 +406,14 @@ function similarityKey(value: string): string {
 }
 
 function outputLanguage(task: ProductTask): string {
-  return /english|英文|英语/i.test(task.outputLanguage || "") ? "English" : "Simplified Chinese";
+  return outputLanguagePromptName(task.outputLanguage, "简体中文");
 }
 
 function composePromptWithinBudget(requiredHead: string, optionalSections: string[], requiredTail: string, maxChars: number): string {
   const separator = "\n\n";
   const mandatory = `${requiredHead}${separator}${requiredTail}`;
   if (mandatory.length > maxChars) {
-    const tailBudget = Math.min(requiredTail.length, Math.max(1_200, Math.floor(maxChars * 0.34)));
+    const tailBudget = Math.min(requiredTail.length, Math.max(1_200, Math.floor(maxChars * 0.42)));
     const safeTail = fitCompleteLines(requiredTail, tailBudget, true);
     const headBudget = Math.max(600, maxChars - safeTail.length - separator.length);
     return `${fitCompleteLines(requiredHead, headBudget, false)}${separator}${safeTail}`.slice(0, maxChars).trimEnd();

@@ -138,8 +138,7 @@ try {
     }
 
     # The self-service portal uses the same React source but its own Vite base
-    # so all browser assets stay under /portal/. It remains an internal
-    # loopback process; users only visit 8001/portal/.
+    # and authenticated browser entry on port 8003.
     $previousPortalBase = $env:BGE_WORKBENCH_BASE
     $env:BGE_WORKBENCH_BASE = '/portal/'
     try {
@@ -173,8 +172,8 @@ try {
     $state | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $processFile -Encoding UTF8
 
     Write-Host 'BGE Node、若依后端、若依前端、作图工作台和用户端门户已经在本机回环地址启动并通过就绪检查。'
-    Write-Host '统一入口地址为 http://127.0.0.1:8001'
-    Write-Host '用户作图入口为 http://127.0.0.1:8001/portal/'
+    Write-Host 'Admin entry: http://127.0.0.1:8001/'
+    Write-Host 'User portal: http://127.0.0.1:8003/portal/'
     Write-Host "运行日志位于 $logRoot"
 }
 catch {

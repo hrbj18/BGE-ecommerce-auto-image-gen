@@ -72,6 +72,8 @@ test("prompt budgeting preserves critical head and tail contracts under oversize
   assert.match(prompt, /FRAME EXECUTION/);
   assert.match(prompt, /Visible proof:/);
   assert.match(prompt, /VISIBLE COPY CONTRACT/);
+  assert.match(prompt, /TEXT SAFE AREA \(hard requirement\)/);
+  assert.match(prompt, /x=12%-88%/);
   assert.match(prompt, /Use only these approved marketing lines:.*AI Companion Robot/);
   assert.match(prompt, /CANVAS AND FINAL CHECK/);
   assert.match(prompt, /Forbidden:/);
@@ -105,9 +107,15 @@ test("complete 5+8 storyboard compiles thirteen independent prompt contracts", (
 test("platform style and visible-copy language remain independent", () => {
   const cases = [
     ["国内通用", "简体中文", "Premium domestic", "Simplified Chinese"],
-    ["国内通用", "English", "Premium domestic", "English"],
+    ["国外通用", "English", "Premium global", "English"],
+    ["淘宝/天猫", "简体中文", "Taobao/Tmall", "Simplified Chinese"],
+    ["京东", "English", "JD.com professional", "English"],
+    ["抖音电商", "简体中文", "Douyin ecommerce", "Simplified Chinese"],
+    ["小红书", "English", "Xiaohongshu lifestyle", "English"],
     ["Amazon", "English", "Amazon premium", "English"],
-    ["Amazon", "简体中文", "Amazon premium", "Simplified Chinese"]
+    ["TikTok Shop", "简体中文", "TikTok Shop social", "Simplified Chinese"],
+    ["Shopee", "English", "Shopee mobile", "English"],
+    ["Lazada", "简体中文", "Lazada brand mall", "Simplified Chinese"],
   ] as const;
 
   for (const [platform, language, platformToken, languageToken] of cases) {
@@ -126,6 +134,55 @@ test("platform style and visible-copy language remain independent", () => {
     assert.ok(plan.direction.styleIntent.includes(platformToken), `${platform}/${language} platform style`);
     assert.ok(prompt.includes(`Language: ${languageToken}`), `${platform}/${language} language`);
   }
+});
+
+test("new languages keep the English storyboard baseline but localize visible copy", () => {
+  const cases = [
+    ["日本語", "Japanese"],
+    ["한국어", "Korean"],
+    ["Español", "Spanish"],
+    ["Français", "French"],
+    ["Deutsch", "German"],
+    ["Italiano", "Italian"],
+    ["Português", "Portuguese"],
+    ["العربية", "Arabic"],
+  ] as const;
+
+  for (const [language, promptName] of cases) {
+    const task = makeTask("国内通用", language);
+    const plan = makePlan(task);
+    const prompt = compileDirectedFramePrompt({
+      task,
+      insight: makeInsight(),
+      direction: plan.direction,
+      frame: plan.frames[0],
+      copy: ["Playful AI Companion", "Learning Through Conversation"],
+      title: "Hero",
+      aspectRatio: "1:1",
+      forbidden: "watermark",
+    });
+    assert.match(prompt, new RegExp(`Language: ${promptName}`), language);
+    assert.match(prompt, /English localization source \(internal meaning only; never render verbatim\)/, language);
+    assert.match(prompt, new RegExp(`render only the ${promptName} translation`, "i"), language);
+    assert.doesNotMatch(prompt, /Language: Simplified Chinese/, language);
+  }
+});
+
+test("Arabic creative prompt requires RTL composition", () => {
+  const task = makeTask("Amazon", "العربية");
+  const plan = makePlan(task);
+  const prompt = compileDirectedFramePrompt({
+    task,
+    insight: makeInsight(),
+    direction: plan.direction,
+    frame: plan.frames[0],
+    copy: ["Playful AI Companion"],
+    title: "Hero",
+    aspectRatio: "1:1",
+    forbidden: "watermark",
+  });
+  assert.match(prompt, /right-to-left Arabic typography/);
+  assert.match(prompt, /right-aligned reading order/);
 });
 
 test("model creative direction enriches execution fields but cannot replace assigned selling points", () => {

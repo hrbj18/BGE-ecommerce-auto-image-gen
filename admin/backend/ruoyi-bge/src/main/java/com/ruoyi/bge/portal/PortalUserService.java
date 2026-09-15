@@ -1,44 +1,44 @@
 package com.ruoyi.bge.portal;
 
 import java.util.Date;
-import java.util.Set;
 import java.util.regex.Pattern;
+import com.ruoyi.bge.points.BgePointService;
 import com.ruoyi.bge.support.PortalException;
 import com.ruoyi.common.core.domain.entity.SysUser;
 import com.ruoyi.common.core.domain.model.LoginUser;
+import com.ruoyi.common.constant.UserConstants;
 import com.ruoyi.common.utils.DateUtils;
 import com.ruoyi.common.utils.SecurityUtils;
 import com.ruoyi.framework.web.service.SysLoginService;
 import com.ruoyi.framework.web.service.TokenService;
-import com.ruoyi.system.service.ISysRoleService;
 import com.ruoyi.system.service.ISysUserService;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** Registration and role gates for the user-facing portal. */
+/** Registration and authentication for the user-facing portal. */
 @Service
 public class PortalUserService
 {
     public static final String PORTAL_ROLE = "bge_portal_user";
     private static final Pattern USERNAME = Pattern.compile("[A-Za-z0-9_]{4,20}");
     private static final int MIN_PASSWORD_LENGTH = 6;
-    private static final int MAX_PASSWORD_LENGTH = 32;
+    private static final int MAX_PASSWORD_LENGTH = UserConstants.PASSWORD_MAX_LENGTH;
 
     private final ISysUserService userService;
-    private final ISysRoleService roleService;
     private final SysLoginService loginService;
     private final TokenService tokenService;
     private final JdbcTemplate jdbcTemplate;
+    private final BgePointService pointService;
 
-    public PortalUserService(ISysUserService userService, ISysRoleService roleService,
-            SysLoginService loginService, TokenService tokenService, JdbcTemplate jdbcTemplate)
+    public PortalUserService(ISysUserService userService, SysLoginService loginService,
+            TokenService tokenService, JdbcTemplate jdbcTemplate, BgePointService pointService)
     {
         this.userService = userService;
-        this.roleService = roleService;
         this.loginService = loginService;
         this.tokenService = tokenService;
         this.jdbcTemplate = jdbcTemplate;
+        this.pointService = pointService;
     }
 
     @Transactional
@@ -57,6 +57,10 @@ public class PortalUserService
         }
 
         Long roleId = portalRoleId();
+        if (roleId == null)
+        {
+            throw PortalException.conflict("用户端正在初始化，请稍后重试。");
+        }
         SysUser user = new SysUser();
         user.setUserName(username);
         user.setNickName(nickName);
@@ -70,18 +74,19 @@ public class PortalUserService
         {
             throw PortalException.conflict("账号创建未完成，请稍后重试。 ");
         }
-        return new PortalProfile(user.getUserId(), user.getUserName(), user.getNickName());
+        pointService.account(user.getUserId());
+        return profile(user);
     }
 
     public PortalLogin login(Login request)
     {
         String username = text(request.username());
+        String token = loginService.login(username, request.password(), text(request.code()), text(request.uuid()));
         SysUser user = userService.selectUserByUserName(username);
-        if (user == null || !hasPortalRole(user.getUserId()))
+        if (user == null)
         {
             throw PortalException.forbidden();
         }
-        String token = loginService.login(username, request.password(), text(request.code()), text(request.uuid()));
         return new PortalLogin(token, profile(user));
     }
 
@@ -89,12 +94,12 @@ public class PortalUserService
     {
         LoginUser loginUser = SecurityUtils.getLoginUser();
         Long userId = loginUser.getUserId();
-        if (userId == null || !hasPortalRole(userId))
+        if (userId == null)
         {
             throw PortalException.forbidden();
         }
         SysUser user = userService.selectUserByUserName(loginUser.getUsername());
-        if (user == null || !hasPortalRole(user.getUserId()))
+        if (user == null)
         {
             throw PortalException.forbidden();
         }
@@ -108,16 +113,6 @@ public class PortalUserService
         {
             tokenService.delLoginUser(loginUser.getToken());
         }
-    }
-
-    private boolean hasPortalRole(Long userId)
-    {
-        if (userId == null)
-        {
-            return false;
-        }
-        Set<String> roles = roleService.selectRolePermissionByUserId(userId);
-        return roles != null && roles.contains(PORTAL_ROLE);
     }
 
     private Long portalRoleId()
@@ -159,7 +154,8 @@ public class PortalUserService
 
     private PortalProfile profile(SysUser user)
     {
-        return new PortalProfile(user.getUserId(), user.getUserName(), user.getNickName());
+        long balance = pointService.account(user.getUserId()).balance();
+        return new PortalProfile(user.getUserId(), user.getUserName(), user.getNickName(), balance);
     }
 
     public record Registration(String username, String nickName, String password, String confirmPassword,
@@ -171,7 +167,7 @@ public class PortalUserService
     {
     }
 
-    public record PortalProfile(Long userId, String username, String nickName)
+    public record PortalProfile(Long userId, String username, String nickName, long pointsBalance)
     {
     }
 

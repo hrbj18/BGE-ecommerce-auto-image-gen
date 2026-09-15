@@ -33,6 +33,31 @@ test("trusted robot identity overrides a stale shoe category", () => {
   );
 });
 
+test("new output languages reuse the English brief planning baseline", () => {
+  const languages = ["日本語", "한국어", "Español", "Français", "Deutsch", "Italiano", "Português", "العربية"];
+  for (const outputLanguage of languages) {
+    const points = inferBriefSellingPoints({
+      productName: "家用破壁机",
+      rawBriefText: blenderInput,
+      productImageAnalysis: blenderAnalysis,
+      outputLanguage,
+    });
+    const sections = buildConcreteBriefSections({
+      productName: "家用破壁机",
+      sellingPoints: points,
+      rawBriefText: blenderInput,
+      productImageAnalysis: blenderAnalysis,
+      outputLanguage,
+      generationProfile: { mainImageCount: 1, detailImageCount: 2 },
+    });
+    assert.equal(inferCategoryFromSource(blenderAnalysis, outputLanguage), "Kitchen Blenders", outputLanguage);
+    assert.match(points.join(" "), /blending|breakfast|cup/i, outputLanguage);
+    assert.match(sections.proofMatrix, /Product-form chain/, outputLanguage);
+    assert.match(sections.mainPlan, /visible headline:/, outputLanguage);
+    assert.doesNotMatch(sections.mainPlan, /卖点：|产品形态：/, outputLanguage);
+  }
+});
+
 test("duck-shaped articulated toy is not mislabeled as an AI companion robot", () => {
   const analysis = "Duck-shaped robotic toys with rounded heads, yellow side eyes, exposed articulated joints, orange feet, a blue shell with dinosaur and rainbow graphics, a child hand and a play ball.";
   const identity = inferProductIdentity({

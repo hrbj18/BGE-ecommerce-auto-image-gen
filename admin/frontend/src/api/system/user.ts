@@ -1,9 +1,11 @@
 import request from '@/utils/request'
 import { parseStrEmpty } from "@/utils/ruoyi"
-import type { UserQueryParams, UserFormDataResult, UserProfileResult, UserAuthRoleResult, UserProfileAvatarResult, SysUser, SysUserRole, SysUserRoles, AjaxResult, TableDataInfo, TreeSelect } from '@/types'
+import type { UserQueryParams, UserFormDataResult, UserProfileResult, UserAuthRoleResult, UserProfileAvatarResult, SysUser } from '@/types/api/system/user'
+import type { SysUserRoles } from '@/types/api/system/role'
+import type { AjaxResult, TableDataInfo, TreeSelect } from '@/types/api/common'
 
 // 查询用户列表
-export function listUser(query: UserQueryParams): Promise<TableDataInfo<SysUser[]>> {
+export function listUser(query: UserQueryParams): Promise<TableDataInfo<SysUser>> {
   return request({
     url: '/system/user/list',
     method: 'get',

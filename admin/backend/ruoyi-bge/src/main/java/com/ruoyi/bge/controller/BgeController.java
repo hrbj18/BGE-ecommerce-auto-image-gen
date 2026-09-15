@@ -10,6 +10,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -24,6 +25,7 @@ public class BgeController
     private static final String LIST_PERMISSION = "@ss.hasPermi('bge:task:list')";
     private static final String QUERY_PERMISSION = "@ss.hasPermi('bge:task:query')";
     private static final String OUTPUT_PERMISSION = "@ss.hasPermi('bge:output:view')";
+    private static final String RETRY_PERMISSION = "@ss.hasPermi('bge:task:retry')";
 
     private final BgeReadService service;
 
@@ -52,6 +54,13 @@ public class BgeController
     public AjaxResult task(@PathVariable String taskId)
     {
         return AjaxResult.success(service.task(taskId));
+    }
+
+    @PreAuthorize(RETRY_PERMISSION)
+    @PostMapping("/tasks/{taskId}/retry")
+    public AjaxResult retryTask(@PathVariable String taskId)
+    {
+        return AjaxResult.success(service.retryTask(taskId));
     }
 
     @PreAuthorize(OUTPUT_PERMISSION)

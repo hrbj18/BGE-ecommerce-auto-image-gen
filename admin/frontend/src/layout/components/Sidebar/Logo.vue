@@ -14,7 +14,7 @@
 </template>
 
 <script setup lang="ts">
-import logo from '@/assets/logo/logo.png'
+import logo from '@/assets/logo/haike-mark.svg'
 import useSettingsStore from '@/store/modules/settings'
 import variables from '@/assets/styles/variables.module.scss'
 
@@ -25,7 +25,7 @@ defineProps({
   }
 })
 
-const title = import.meta.env.VITE_APP_TITLE
+const title = '海客电商生图'
 const settingsStore = useSettingsStore()
 const sideTheme = computed(() => settingsStore.sideTheme)
 
@@ -69,26 +69,29 @@ const getLogoTextColor = computed(() => {
   background: v-bind(getLogoBackground);
   text-align: center;
   overflow: hidden;
+  border-bottom: 1px solid rgba(125, 211, 199, 0.16);
 
   & .sidebar-logo-link {
     height: 100%;
     width: 100%;
 
     & .sidebar-logo {
-      width: 32px;
-      height: 32px;
+      width: 30px;
+      height: 30px;
       vertical-align: middle;
-      margin-right: 12px;
+      margin-right: 10px;
+      border-radius: 6px;
+      box-shadow: 0 4px 12px rgba(3, 30, 27, 0.24);
     }
 
     & .sidebar-title {
       display: inline-block;
       margin: 0;
       color: v-bind(getLogoTextColor);
-      font-weight: 600;
+      font-weight: 700;
       line-height: 50px;
-      font-size: 14px;
-      font-family: Avenir, Helvetica Neue, Arial, Helvetica, sans-serif;
+      font-size: 15px;
+      font-family: "Microsoft YaHei", Arial, sans-serif;
       vertical-align: middle;
     }
   }

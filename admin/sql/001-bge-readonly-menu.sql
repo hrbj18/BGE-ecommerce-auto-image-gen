@@ -101,6 +101,18 @@ SELECT
   'admin', NOW(), '', NULL, '查看 BGE 成品和缩略图'
 WHERE NOT EXISTS (SELECT 1 FROM sys_menu WHERE perms = 'bge:output:view');
 
+SET @bge_next_menu_id := GREATEST(COALESCE((SELECT MAX(menu_id) + 1 FROM sys_menu), 2000), 2000);
+INSERT INTO sys_menu (
+  menu_id, menu_name, parent_id, order_num, path, component, query, route_name,
+  is_frame, is_cache, menu_type, visible, status, perms, icon,
+  create_by, create_time, update_by, update_time, remark
+)
+SELECT
+  @bge_next_menu_id, '继续生成', @bge_task_menu_id, 3, '#', '', '', '',
+  1, 0, 'F', '0', '0', 'bge:task:retry', '#',
+  'admin', NOW(), '', NULL, '继续生成失败或缺图的 BGE 任务'
+WHERE NOT EXISTS (SELECT 1 FROM sys_menu WHERE perms = 'bge:task:retry');
+
 SET @bge_role_id := (
   SELECT role_id FROM sys_role
   WHERE role_key = 'bge_viewer' AND del_flag = '0'
@@ -168,7 +180,7 @@ INSERT INTO sys_role_menu (role_id, menu_id)
 SELECT @bge_operator_role_id, menu_id
 FROM sys_menu
 WHERE menu_id IN (@bge_root_id, @bge_task_menu_id, @bge_workbench_menu_id)
-   OR perms IN ('bge:task:query', 'bge:output:view', 'bge:workbench:use');
+   OR perms IN ('bge:task:query', 'bge:output:view', 'bge:workbench:use', 'bge:task:retry');
 
 -- The official demonstration account must remain disabled in this local deployment.
 UPDATE sys_user SET status = '1', update_by = 'admin', update_time = NOW()

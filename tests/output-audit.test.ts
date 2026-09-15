@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isActionableGeneratedVisualAuditFailure, normalizeGeneratedVisualAudit, skippedGeneratedVisualAudit } from "../src/output-audit.ts";
+import {
+  isActionableGeneratedVisualAuditFailure,
+  isTextBoundaryGeneratedVisualAuditFailure,
+  normalizeGeneratedVisualAudit,
+  skippedGeneratedVisualAudit
+} from "../src/output-audit.ts";
 
 const expected = [
   { role: "main" as const, index: 1, title: "Hero" },
@@ -51,4 +56,22 @@ test("unavailable audit does not block generation", () => {
   assert.equal(report.enabled, false);
   assert.equal(report.passed, true);
   assert.deepEqual(report.warnings, ["No vision key configured"]);
+});
+
+test("recognizes coded Chinese and English text boundary failures", () => {
+  const base = {
+    role: "detail" as const,
+    index: 1,
+    title: "Detail",
+    passed: false,
+    identityMatch: true,
+    sellingPointShown: true,
+    noForbiddenObjects: true,
+    sceneDistinct: true,
+    artDirectionMatch: false,
+    copyLanguageCorrect: true
+  };
+  assert.equal(isTextBoundaryGeneratedVisualAuditFailure({ ...base, reasons: ["TEXT_BOUNDARY_VIOLATION: right-side headline is clipped"] }), true);
+  assert.equal(isTextBoundaryGeneratedVisualAuditFailure({ ...base, reasons: ["右上文字超出画布边缘"] }), true);
+  assert.equal(isTextBoundaryGeneratedVisualAuditFailure({ ...base, reasons: ["Product identity mismatch"] }), false);
 });

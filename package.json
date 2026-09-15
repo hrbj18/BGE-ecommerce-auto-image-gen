@@ -16,7 +16,7 @@
     "web": "node scripts/dev-web-app.mjs",
     "bootstrap": "node scripts/bootstrap-workspace.mjs",
     "backend:dev": "node scripts/local-web-server.mjs",
-    "frontend:dev": "pnpm --dir frontend run dev",
+    "frontend:dev": "node scripts/dev-web-app.mjs",
     "frontend:build": "pnpm --dir frontend run build",
     "smoke:reference-drag": "node scripts/smoke-reference-drag-upload.mjs",
     "build:template": "node scripts/build_excel_template.mjs",

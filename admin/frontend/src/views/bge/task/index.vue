@@ -4,10 +4,16 @@
       <div class="page-heading">
         <div>
           <h2>生图任务中心</h2>
-          <p>只读查看本机商品生图进度、安全事件和已完成图片。</p>
+          <p>查看本机商品生图进度、安全事件和已完成图片。</p>
         </div>
         <div class="health-status" aria-live="polite">
           <span class="health-label">生图引擎</span>
+          <el-tag v-if="health?.resilience?.terminalTaskCount" type="success" effect="plain" round>
+            整单成功 {{ successRateText(health.resilience.completeSuccessRate) }}
+          </el-tag>
+          <el-tag v-if="health?.recoveryQueueSize" type="warning" effect="plain" round>
+            待恢复 {{ health.recoveryQueueSize }}
+          </el-tag>
           <el-tag :type="healthTagType" effect="light" round>
             {{ healthText }}
           </el-tag>
@@ -118,7 +124,7 @@
             {{ formatDateTime(scope.row.updatedAt) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right" align="center">
+        <el-table-column label="操作" width="190" fixed="right" align="center">
           <template #default="scope">
             <el-button
               link
@@ -127,6 +133,15 @@
               v-hasPermi="['bge:task:query']"
               @click="openDetail(scope.row)"
             >查看详情</el-button>
+            <el-button
+              v-if="canRetryTask(scope.row)"
+              link
+              type="warning"
+              icon="RefreshRight"
+              :loading="retryingTaskId === scope.row.id"
+              v-hasPermi="['bge:task:retry']"
+              @click="handleRetryTask(scope.row)"
+            >补齐缺图</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -245,7 +260,7 @@
           <section v-hasPermi="['bge:output:view']" class="detail-section">
             <div class="section-heading">
               <h4>成品缩略图</h4>
-              <span>图片通过若依鉴权代理读取</span>
+              <span>图片通过海客后台鉴权读取</span>
             </div>
 
             <el-alert
@@ -284,13 +299,15 @@
 
 <script setup lang="ts" name="BgeTaskCenter">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import AuthenticatedImage from './AuthenticatedImage.vue'
 import {
   getBgeHealth,
   getBgeOutput,
   getBgeTask,
   isBgeAssetUrl,
-  listBgeTasks
+  listBgeTasks,
+  retryBgeTask
 } from '../../../api/bge/task'
 import type {
   BgeAsset,
@@ -320,7 +337,8 @@ const activeStatuses = new Set([
   'generating',
   'generating-main',
   'generating-detail',
-  'recovering'
+  'recovering',
+  'recovery-wait'
 ])
 
 const statusOptions = [
@@ -353,6 +371,7 @@ const detailError = ref('')
 const outputError = ref('')
 const selectedTask = ref<BgeTask | null>(null)
 const selectedOutput = ref<BgeOutput | null>(null)
+const retryingTaskId = ref('')
 let listRequestSequence = 0
 let detailRequestSequence = 0
 let pollTimer: ReturnType<typeof setTimeout> | null = null
@@ -438,6 +457,31 @@ function isActiveTask(task: BgeTask): boolean {
   return activeStatuses.has(status) || activeStatuses.has(stage)
 }
 
+function canRetryTask(task: BgeTask): boolean {
+  return task.canRetry !== false
+    && ['failed', 'partial', 'interrupted', 'cancelled', 'canceled'].includes(String(task.status || '').toLowerCase())
+}
+
+async function handleRetryTask(task: BgeTask) {
+  if (!task.id || retryingTaskId.value) return
+  try {
+    await ElMessageBox.confirm('系统会复用成功图片，只补齐缺失图片。确认继续生成？', '继续生成', {
+      confirmButtonText: '继续生成',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    retryingTaskId.value = task.id
+    await retryBgeTask(task.id)
+    ElMessage.success('任务已恢复，正在补齐缺失图片。')
+    await refreshOverview(true)
+    if (detailVisible.value && selectedTask.value?.id === task.id) await loadSelectedTask(task.id, true)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') pageError.value = errorText(error, '继续生成失败，请稍后再试。')
+  } finally {
+    retryingTaskId.value = ''
+  }
+}
+
 function statusLabel(status?: string): string {
   const labels: Record<string, string> = {
     receiving: '接收中',
@@ -450,6 +494,7 @@ function statusLabel(status?: string): string {
     'generating-main': '生成主图',
     'generating-detail': '生成详情图',
     recovering: '恢复中',
+    'recovery-wait': '等待恢复',
     done: '已完成',
     completed: '已完成',
     '已完成': '已完成',
@@ -504,6 +549,12 @@ function firstPreviewText(task: BgeTask): string {
   const seconds = milliseconds / 1000
   if (seconds < 60) return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} 秒`
   return `${Math.floor(seconds / 60)} 分 ${Math.round(seconds % 60)} 秒`
+}
+
+function successRateText(value?: number): string {
+  const ratio = Number(value || 0)
+  if (!Number.isFinite(ratio)) return '0%'
+  return `${Math.round(Math.max(0, Math.min(1, ratio)) * 1000) / 10}%`
 }
 
 function formatDateTime(value?: string): string {

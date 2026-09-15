@@ -19,9 +19,27 @@ import { createPnpmCommand } from "./runtime-commands.mjs";
 import { SubmissionGate, normalizeIdempotencyKey } from "./local-web-admission.mjs";
 import { authorizeWriteRequest, corsOriginForRequest, normalizeAccessMode } from "./local-web-access.mjs";
 import { createOnceAsyncFinalizer, terminateProcessTree } from "./local-web-process-manager.mjs";
+import {
+  outputLanguageInstruction,
+  requireOutputLanguage,
+  usesEnglishLanguageBaseline,
+} from "../src/output-language-profiles.mjs";
+import {
+  listPlatformStyleProfiles,
+  platformStyleProfile,
+  requireTargetPlatform,
+} from "../src/platform-style-profiles.mjs";
 import { inspectDiskSpace, minimumFreeBytes, requireDiskSpace } from "./local-web-storage.mjs";
 import { AtomicJsonStore } from "./local-web-task-store.mjs";
 import { requireImageProviderConnectivity } from "./image-provider-connectivity.mjs";
+import {
+  automaticRecoveryEnabled,
+  buildResilienceMetrics,
+  classifyWorkflowFailure,
+  configuredProviderOrder,
+  createProviderCircuitBreaker,
+  recoveryDelaysMs,
+} from "./generation-resilience.mjs";
 import {
   defaultGenerationProfileId,
   findGenerationProfile,
@@ -75,6 +93,9 @@ let taskPersistTimer = null;
 let currentWorkflow = null;
 let shuttingDown = false;
 let lastDiskStatus = null;
+const recoveryTimers = new Map();
+let providerCircuitBreaker = createProviderCircuitBreaker(process.env);
+const persistedRecoveryJobIds = [];
 
 const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
 const promptFileExtensions = new Set([".md", ".txt"]);
@@ -169,6 +190,9 @@ const server = http.createServer(async (req, res) => {
         activeJobId: active?.jobId || null,
         activePhase: active?.phase || "idle",
         acceptingJobs: serviceState === "ready",
+        recoveryQueueSize: recoveryTimers.size,
+        resilience: buildResilienceMetrics(jobs.values()),
+        platformStyleProfiles: listPlatformStyleProfiles(),
         generationProfiles: listGenerationProfiles(),
         imageAspectRatioProfiles: listImageAspectRatioProfiles(),
         imageResolutionProfiles: listImageResolutionProfiles(),
@@ -185,6 +209,8 @@ const server = http.createServer(async (req, res) => {
       return await handleCreateJob(req, res);
     }
     if (req.method === "POST" && /^\/api\/jobs\/[^/]+\/cancel$/.test(url.pathname)) return await handleCancelJob(url, res);
+    if (req.method === "POST" && /^\/api\/jobs\/[^/]+\/retry$/.test(url.pathname)) return await handleRetryJob(url, res);
+    if (req.method === "GET" && url.pathname === "/api/resilience-metrics") return sendJson(res, 200, buildResilienceMetrics(jobs.values()));
     if (req.method === "GET" && url.pathname.startsWith("/api/jobs/")) return handleGetJob(url, res);
     if (req.method === "GET" && url.pathname === "/api/tasks") return await handleListTasks(res);
     if (req.method === "GET" && url.pathname.startsWith("/api/tasks/")) return await handleGetTask(url, res);
@@ -217,9 +243,9 @@ server.on("error", (error) => {
 
 server.listen(port, host, () => {
   console.log(`Local ecommerce API listening on http://${host}:${port}`);
-    if (accessMode === "off") console.warn("内部访问令牌当前已封存：局域网设备可直接创建、取消或删除任务。");
-    if (accessMode === "token" && !accessToken) console.warn("LOCAL_WEB_ACCESS_MODE=token 但未配置令牌：只有本机回环地址可以执行写操作。");
-    if (requireReadToken && !accessToken) console.warn("LOCAL_WEB_REQUIRE_READ_TOKEN 已启用但未配置令牌：只有本机回环地址可以读取接口。");
+  if (!accessToken) console.warn("内部访问令牌未配置：所有生图写操作均已锁定。");
+  if (requireReadToken && !accessToken) console.warn("只读接口鉴权已启用但未配置令牌：所有内部读取均已锁定。");
+    resumePersistedJobs();
 });
 
 let shutdownPromise = null;
@@ -235,26 +261,31 @@ async function gracefulShutdown(signal) {
   server.close();
   const workflow = currentWorkflow;
   if (workflow) {
-    workflow.cancelRequested = true;
+    workflow.shutdownRequested = true;
     const job = jobs.get(workflow.jobId);
     if (job) {
-      job.status = "canceling";
-      job.message = "服务正在关闭，工作流将停止并保留已完成图片。";
-      addJobEvent(job, "shutdown-canceling", job.message, { signal });
+      job.status = "recovery-wait";
+      job.message = "服务正在重启，任务和已完成图片已保存，启动后会自动续跑。";
+      addJobEvent(job, "shutdown-recovery-wait", job.message, { signal });
     }
     await terminateProcessTree(workflow.child).catch(() => undefined);
-    await workflow.finalize?.({ kind: "cancel", code: workflow.child.exitCode });
+    await workflow.finalize?.({ kind: "shutdown", code: workflow.child.exitCode });
   } else {
     const active = submissionGate.snapshot();
     const job = active ? jobs.get(active.jobId) : null;
     if (job && ["receiving", "submitting", "queued"].includes(job.status)) {
-      job.status = "interrupted";
-      job.message = "服务在任务启动前关闭，请重新提交。";
-      addJobEvent(job, "interrupted", job.message, { signal });
+      const durable = Boolean(job.materialDir && job.outputFolderName);
+      job.status = durable ? "recovery-wait" : "failed";
+      job.message = durable
+        ? "服务正在重启，任务素材已保存，启动后会自动续跑。"
+        : "服务在素材保存前关闭，请重新提交。";
+      addJobEvent(job, durable ? "shutdown-recovery-wait" : "failed", job.message, { signal });
       submissionGate.release(active.token);
       activeJobId = null;
     }
   }
+  for (const timer of recoveryTimers.values()) clearTimeout(timer);
+  recoveryTimers.clear();
   if (taskPersistTimer) {
     clearTimeout(taskPersistTimer);
     taskPersistTimer = null;
@@ -294,17 +325,33 @@ function loadDotEnv(filePath = path.join(rootDir, ".env"), options = {}) {
 async function loadPersistedTasks() {
   const loaded = await taskStore.load();
   const store = loaded.value;
+  providerCircuitBreaker = createProviderCircuitBreaker(process.env, store?.providerCircuits || {});
   if (loaded.recovered) console.warn("任务主状态文件无法读取，已从 tasks.json.bak 恢复最近有效记录。");
   const tasks = Array.isArray(store?.tasks) ? store.tasks : [];
   let changed = false;
   for (const item of tasks) {
     if (!item?.id) continue;
     const job = normalizePersistedJob(item);
-    if (["receiving", "queued", "running", "submitting", "canceling"].includes(job.status)) {
-      job.status = "interrupted";
-      job.message = "服务曾经重启，这个任务没有可恢复的运行进程，请重新生成。";
+    if (["queued", "running", "submitting", "recovering", "recovery-wait"].includes(job.status)) {
+      job.status = "recovery-wait";
+      job.message = "服务已恢复任务记录，正在准备从已完成进度继续生成。";
       job.updatedAt = new Date().toISOString();
-      addJobEvent(job, "interrupted", "服务重启后恢复任务记录，但运行进程已中断。");
+      job.recovery = {
+        ...normalizeRecoveryState(job.recovery),
+        nextRetryAt: new Date(Date.now() + startupRecoveryDelayMs()).toISOString(),
+        reason: "service-restart",
+      };
+      addJobEvent(job, "restart-recovery-wait", job.message);
+      persistedRecoveryJobIds.push(job.id);
+      changed = true;
+    } else if (job.status === "canceling") {
+      job.status = "cancelled";
+      job.message = "服务重启前收到取消请求，任务已停止并保留已完成图片。";
+      changed = true;
+    } else if (job.status === "receiving") {
+      job.status = "failed";
+      job.errorCode = "UPLOAD_INTERRUPTED";
+      job.message = "服务在素材保存前重启，请重新提交任务。";
       changed = true;
     }
     jobs.set(job.id, job);
@@ -327,6 +374,7 @@ function normalizePersistedJob(item) {
     outputFolderName: text(item.outputFolderName) || text(item.outputId) || text(item.output?.id),
     materialDir: text(item.materialDir),
     outputDir: text(item.outputDir),
+    preferredProvider: text(item.preferredProvider).toLowerCase(),
     materialFiles: Array.isArray(item.materialFiles) ? item.materialFiles.map((name) => String(name)).slice(0, 80) : [],
     referenceCount: Number(item.referenceCount || 0),
     referenceNames: Array.isArray(item.referenceNames) ? item.referenceNames.map((name) => String(name)).slice(0, 20) : [],
@@ -412,7 +460,43 @@ function normalizePersistedJob(item) {
     output: item.output || null,
     log: trimLog(text(item.log)),
     events: Array.isArray(item.events) ? item.events.slice(-80) : [],
+    errorCode: text(item.errorCode),
+    recovery: normalizeRecoveryState(item.recovery),
+    attemptHistory: normalizeAttemptHistory(item.attemptHistory),
   };
+}
+
+function normalizeRecoveryState(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    automaticAttempts: Math.max(0, Number(source.automaticAttempts || 0) || 0),
+    manualAttempts: Math.max(0, Number(source.manualAttempts || 0) || 0),
+    restartAttempts: Math.max(0, Number(source.restartAttempts || 0) || 0),
+    nextRetryAt: text(source.nextRetryAt),
+    currentProvider: text(source.currentProvider).toLowerCase(),
+    lastClassification: text(source.lastClassification),
+    lastErrorCode: text(source.lastErrorCode),
+    reason: text(source.reason),
+    exhausted: Boolean(source.exhausted),
+  };
+}
+
+function normalizeAttemptHistory(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(-40).map((item) => ({
+    attempt: Math.max(1, Number(item?.attempt || 1) || 1),
+    kind: text(item?.kind) || "initial",
+    provider: text(item?.provider).toLowerCase(),
+    startedAt: text(item?.startedAt),
+    finishedAt: text(item?.finishedAt),
+    durationMs: Math.max(0, Number(item?.durationMs || 0) || 0),
+    outcome: text(item?.outcome) || "failed",
+    classification: text(item?.classification),
+    errorCode: text(item?.errorCode),
+    failureSummary: text(item?.failureSummary).slice(0, 240),
+    completed: Math.max(0, Number(item?.completed || 0) || 0),
+    total: Math.max(0, Number(item?.total || 0) || 0),
+  }));
 }
 
 async function taskSummary(job) {
@@ -488,6 +572,9 @@ async function taskSummary(job) {
     outputProductName: job.output?.productName || job.productName,
     outputDisplayName: outputDisplayName(job.output || job),
     hasOutput: Boolean(job.output && hasVisibleOutput(job.output)),
+    canRetry: canManuallyRetryJob(job),
+    recovery: publicRecoveryState(job),
+    attemptCount: Array.isArray(job.attemptHistory) ? job.attemptHistory.length : 0,
     eventCount: Array.isArray(job.events) ? job.events.length : 0,
     latestEvent: Array.isArray(job.events) ? job.events.at(-1) || null : null,
   };
@@ -574,8 +661,9 @@ function schedulePersistTasks() {
 
 async function persistTasks() {
   const payload = {
-    version: 1,
+    version: 2,
     updatedAt: new Date().toISOString(),
+    providerCircuits: providerCircuitBreaker.snapshot(),
     tasks: [...jobs.values()]
       .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
       .slice(0, 200)
@@ -593,6 +681,7 @@ async function persistTasks() {
         outputFolderName: job.outputFolderName || "",
         materialDir: job.materialDir,
         outputDir: job.outputDir || "",
+        preferredProvider: job.preferredProvider || "",
         materialFiles: job.materialFiles || [],
         referenceCount: job.referenceCount || 0,
         referenceNames: job.referenceNames || [],
@@ -659,6 +748,9 @@ async function persistTasks() {
         output: job.output || null,
         log: trimLog(job.log || ""),
         events: Array.isArray(job.events) ? job.events.slice(-80) : [],
+        errorCode: job.errorCode || "",
+        recovery: normalizeRecoveryState(job.recovery),
+        attemptHistory: normalizeAttemptHistory(job.attemptHistory),
       };
       }),
   };
@@ -825,18 +917,13 @@ function buildStructuredBriefInput({ productName = "", targetPlatform = "", outp
 function normalizeTargetPlatform(value) {
   const clean = text(value);
   if (!clean) return "";
-  if (/amazon|亚马逊/i.test(clean)) return "Amazon";
-  if (/淘宝|天猫|tmall|taobao/i.test(clean)) return "淘宝/天猫";
-  if (/国内|通用/i.test(clean)) return "国内通用";
-  return clean;
+  return requireTargetPlatform(clean);
 }
 
 function normalizeOutputLanguage(value) {
   const clean = text(value);
   if (!clean) return "";
-  if (/english|英文|英语/i.test(clean)) return "English";
-  if (/中文|简体|chinese|zh/i.test(clean)) return "简体中文";
-  return clean;
+  return requireOutputLanguage(clean);
 }
 
 async function handleCreateJob(req, res) {
@@ -1243,7 +1330,7 @@ function handleGetJob(url, res) {
   const jobId = decodeURIComponent(url.pathname.replace("/api/jobs/", ""));
   const job = jobs.get(jobId);
   if (!job) return sendJson(res, 404, { error: "任务不存在。" });
-  sendJson(res, 200, job);
+  sendJson(res, 200, { ...job, canRetry: canManuallyRetryJob(job), recovery: publicRecoveryState(job) });
 }
 
 async function handleListTasks(res) {
@@ -1299,7 +1386,7 @@ async function handleDeleteTask(url, res) {
   const jobId = decodeURIComponent(url.pathname.replace("/api/tasks/", ""));
   const job = jobs.get(jobId);
   if (!job) return sendJson(res, 404, { error: "任务不存在。" });
-  if (activeJobId === job.id || ["receiving", "submitting", "queued", "running", "canceling"].includes(job.status)) {
+  if (activeJobId === job.id || ["receiving", "submitting", "queued", "running", "recovering", "recovery-wait", "canceling"].includes(job.status)) {
     return sendJson(res, 409, { error: "这个任务正在生成中，完成后再删除。" });
   }
 
@@ -1784,35 +1871,216 @@ async function readJsonBody(req) {
   return JSON.parse(raw);
 }
 
-async function runWorkflow(job, lease) {
+function startupRecoveryDelayMs() {
+  const configured = Number(process.env.LOCAL_WEB_STARTUP_RECOVERY_DELAY_MS || 5_000);
+  return Number.isFinite(configured) ? Math.max(0, Math.min(configured, 5 * 60_000)) : 5_000;
+}
+
+function recoveryBusyDelayMs() {
+  const configured = Number(process.env.LOCAL_WEB_RECOVERY_BUSY_DELAY_MS || 15_000);
+  return Number.isFinite(configured) ? Math.max(100, Math.min(configured, 5 * 60_000)) : 15_000;
+}
+
+function publicRecoveryState(job) {
+  const recovery = normalizeRecoveryState(job?.recovery);
+  const nextRetryAtMs = Date.parse(recovery.nextRetryAt);
+  return {
+    ...recovery,
+    nextRetryDelayMs: Number.isFinite(nextRetryAtMs) ? Math.max(0, nextRetryAtMs - Date.now()) : 0,
+    provider: recovery.currentProvider || text(process.env.IMAGE_PROVIDER || "aiecho").toLowerCase(),
+  };
+}
+
+function canManuallyRetryJob(job) {
+  if (!job || !job.materialDir || !job.outputFolderName) return false;
+  if (normalizeRecoveryState(job.recovery).lastClassification === "ambiguous") return false;
+  return ["failed", "partial", "interrupted", "cancelled", "recovery-wait"].includes(job.status);
+}
+
+function workflowEnvironment(provider) {
+  return { ...process.env, IMAGE_PROVIDER: provider || process.env.IMAGE_PROVIDER || "aiecho" };
+}
+
+function providerForWorkflow(job, attemptKind) {
+  const preferred = text(job.preferredProvider || process.env.IMAGE_PROVIDER || "aiecho").toLowerCase();
+  if (attemptKind === "initial") return preferred;
+  const providers = configuredProviderOrder(process.env, preferred);
+  return providerCircuitBreaker.choose(providers, preferred) || preferred;
+}
+
+function beginAttemptRecord(job, kind, provider) {
+  const attempt = (Array.isArray(job.attemptHistory) ? job.attemptHistory.length : 0) + 1;
+  return {
+    attempt,
+    kind,
+    provider,
+    startedAt: new Date().toISOString(),
+    finishedAt: "",
+    durationMs: 0,
+    outcome: "running",
+    classification: "",
+    errorCode: "",
+    failureSummary: "",
+    completed: Math.max(0, Number(job.progress?.completed || 0) || 0),
+    total: Math.max(0, Number(job.progress?.total || 0) || 0),
+    logStart: text(job.log).length,
+  };
+}
+
+function finishAttemptRecord(job, attempt, outcome, failure = null) {
+  const finishedAt = new Date();
+  const startedAt = Date.parse(attempt.startedAt);
+  Object.assign(attempt, {
+    finishedAt: finishedAt.toISOString(),
+    durationMs: Number.isFinite(startedAt) ? Math.max(0, finishedAt.getTime() - startedAt) : 0,
+    outcome,
+    classification: failure?.category || "",
+    errorCode: failure?.code || "",
+    failureSummary: failure ? text(job.message).slice(0, 240) : "",
+    completed: Math.max(0, Number(job.progress?.completed || 0) || 0),
+    total: Math.max(0, Number(job.progress?.total || 0) || 0),
+  });
+  job.attemptHistory = [...(Array.isArray(job.attemptHistory) ? job.attemptHistory : []), attempt].slice(-40);
+}
+
+function prepareRecoveryRun(job, kind) {
+  const recovery = normalizeRecoveryState(job.recovery);
+  if (kind === "automatic") recovery.automaticAttempts += 1;
+  if (kind === "manual") recovery.manualAttempts += 1;
+  if (kind === "restart") recovery.restartAttempts += 1;
+  recovery.nextRetryAt = "";
+  recovery.reason = kind;
+  recovery.exhausted = false;
+  job.recovery = recovery;
+}
+
+function scheduleAutomaticRecovery(job, failure) {
+  const recovery = normalizeRecoveryState(job.recovery);
+  recovery.lastClassification = failure.category;
+  recovery.lastErrorCode = failure.code;
+  job.errorCode = failure.code;
+  if (!automaticRecoveryEnabled(process.env) || !failure.retryable || shuttingDown) {
+    recovery.exhausted = false;
+    job.recovery = recovery;
+    return false;
+  }
+  const delays = recoveryDelaysMs(process.env);
+  if (recovery.automaticAttempts >= delays.length) {
+    recovery.exhausted = true;
+    recovery.nextRetryAt = "";
+    job.recovery = recovery;
+    return false;
+  }
+  const delayMs = delays[recovery.automaticAttempts];
+  recovery.nextRetryAt = new Date(Date.now() + delayMs).toISOString();
+  recovery.reason = failure.category;
+  recovery.exhausted = false;
+  job.recovery = recovery;
+  job.status = "recovery-wait";
+  job.message = `${failure.userMessage} 已完成的图片会保留。`;
+  job.progress = {
+    ...(job.progress || {}),
+    stage: "recovery-wait",
+    message: job.message,
+    nextRetryDelayMs: delayMs,
+    updatedAt: new Date().toISOString(),
+  };
+  addJobEvent(job, "recovery-scheduled", job.message, {
+    attempt: recovery.automaticAttempts + 1,
+    delayMs,
+    category: failure.category,
+    code: failure.code,
+  });
+  return true;
+}
+
+function armRecoveryTimer(job) {
+  const existing = recoveryTimers.get(job.id);
+  if (existing) clearTimeout(existing);
+  const scheduledAt = Date.parse(normalizeRecoveryState(job.recovery).nextRetryAt);
+  const delayMs = Number.isFinite(scheduledAt) ? Math.max(0, scheduledAt - Date.now()) : 0;
+  const timer = setTimeout(() => {
+    recoveryTimers.delete(job.id);
+    triggerJobRecovery(job, "automatic").catch((error) => {
+      console.warn(`[recovery] unable to resume job=${job.id}: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }, delayMs);
+  timer.unref?.();
+  recoveryTimers.set(job.id, timer);
+}
+
+function resumePersistedJobs() {
+  for (const jobId of persistedRecoveryJobIds.splice(0)) {
+    const job = jobs.get(jobId);
+    if (job?.status === "recovery-wait") armRecoveryTimer(job);
+  }
+}
+
+async function triggerJobRecovery(job, kind = "automatic") {
+  if (shuttingDown || !job) return false;
+  const admission = submissionGate.begin({ jobId: job.id, phase: "recovering" });
+  if (admission.kind !== "acquired") {
+    const recovery = normalizeRecoveryState(job.recovery);
+    const delayMs = recoveryBusyDelayMs();
+    recovery.nextRetryAt = new Date(Date.now() + delayMs).toISOString();
+    recovery.reason = "engine-busy";
+    job.recovery = recovery;
+    job.status = "recovery-wait";
+    job.message = "其他任务正在生成，本任务会在资源释放后自动继续。";
+    addJobEvent(job, "recovery-deferred", job.message, { delayMs });
+    await persistTasks();
+    armRecoveryTimer(job);
+    return false;
+  }
+  const timer = recoveryTimers.get(job.id);
+  if (timer) clearTimeout(timer);
+  recoveryTimers.delete(job.id);
+  activeJobId = job.id;
+  prepareRecoveryRun(job, kind);
+  job.status = "recovering";
+  job.message = kind === "manual" ? "正在继续生成缺失图片。" : "系统正在自动恢复任务并补齐缺失图片。";
+  addJobEvent(job, "recovery-started", job.message, { kind });
+  await persistTasks();
+  runWorkflow(job, admission.lease, { attemptKind: kind });
+  return true;
+}
+
+async function runWorkflow(job, lease, options = {}) {
+  loadDotEnv(path.join(rootDir, ".env"), { override: process.env.NODE_ENV !== "test" });
+  const attemptKind = text(options.attemptKind) || "initial";
+  const provider = providerForWorkflow(job, attemptKind);
+  job.preferredProvider = text(job.preferredProvider || process.env.IMAGE_PROVIDER || provider).toLowerCase();
+  job.recovery = { ...normalizeRecoveryState(job.recovery), currentProvider: provider };
+  const attemptRecord = beginAttemptRecord(job, attemptKind, provider);
   try {
-    loadDotEnv(path.join(rootDir, ".env"), { override: process.env.NODE_ENV !== "test" });
-    job.status = "submitting";
-    job.message = "正在检查素材并启动本地工作流。";
+    job.status = attemptKind === "initial" ? "submitting" : "recovering";
+    job.message = attemptKind === "initial" ? "正在检查素材并启动本地工作流。" : "正在检查任务状态并恢复缺失图片。";
     job.updatedAt = new Date().toISOString();
-    addJobEvent(job, "submitting", "正在检查素材并启动本地工作流。");
-    submissionGate.transition(lease.token, "submitting");
+    addJobEvent(job, job.status, job.message, { attemptKind, provider });
+    submissionGate.transition(lease.token, job.status);
     if (process.env.NODE_ENV !== "test" && !text(process.env.LOCAL_WEB_TEST_WORKFLOW_SCRIPT)) {
-      await requireImageProviderConnectivity();
+      await requireImageProviderConnectivity({ environment: workflowEnvironment(provider) });
     }
     await validateWorkflowInput(job);
     lastDiskStatus = await requireDiskSpace([inputRoot, outputRoot], { minimumBytes: minimumFreeBytes() });
   } catch (error) {
-    await finalizeWorkflowWithoutChild(job, lease, error, { stage: "preflight" });
+    await finalizeWorkflowWithoutChild(job, lease, error, { stage: "preflight", attemptRecord, provider });
     return;
   }
 
-  job.status = "running";
-  job.message = "本地工作流运行中，正在生成主图和详情页。";
+    job.status = attemptKind === "initial" ? "running" : "recovering";
+    job.message = attemptKind === "initial"
+      ? "本地工作流运行中，正在生成主图和详情页。"
+      : "系统正在复用已完成图片并补齐缺失图片。";
   job.timing = { ...(job.timing || {}), workflowStartedAt: new Date().toISOString() };
   job.updatedAt = new Date().toISOString();
-  addJobEvent(job, "running", "本地工作流已启动，正在生成主图和详情页。");
-  submissionGate.transition(lease.token, "running");
+    addJobEvent(job, job.status, job.message, { attemptKind, provider, attempt: attemptRecord.attempt });
+    submissionGate.transition(lease.token, job.status);
   let child;
   try {
-    child = spawnWorkflowChild(job);
+    child = spawnWorkflowChild(job, provider);
   } catch (error) {
-    await finalizeWorkflowWithoutChild(job, lease, error, { stage: "spawn" });
+    await finalizeWorkflowWithoutChild(job, lease, error, { stage: "spawn", attemptRecord, provider });
     return;
   }
   const workflow = {
@@ -1824,11 +2092,16 @@ async function runWorkflow(job, lease) {
     startedAt: Date.now(),
     timeout: null,
     finalize: null,
+    shutdownRequested: false,
+    attemptRecord,
+    provider,
   };
   currentWorkflow = workflow;
 
   workflow.finalize = createOnceAsyncFinalizer(async ({ kind = "close", code = child.exitCode, error = null } = {}) => {
     if (workflow.timeout) clearTimeout(workflow.timeout);
+    let failure = null;
+    let recoveryScheduled = false;
     try {
       const outputId = job.outputFolderName || job.outputId || job.productName;
       const output = await describeOutput(outputId);
@@ -1838,6 +2111,9 @@ async function runWorkflow(job, lease) {
         job.message = output && hasVisibleOutput(output)
           ? "任务已取消，已保留当前完成的图片。"
           : "任务已取消，运行资源已经释放。";
+      } else if (workflow.shutdownRequested || kind === "shutdown") {
+        job.status = "recovery-wait";
+        job.message = "服务正在重启，任务和已完成图片已保存，启动后会自动续跑。";
       } else if (workflow.timedOut || kind === "timeout") {
         job.status = output && hasVisibleOutput(output) ? "partial" : "failed";
         job.message = output && hasVisibleOutput(output)
@@ -1858,17 +2134,76 @@ async function runWorkflow(job, lease) {
         job.status = "failed";
         job.message = output?.errorMessage || friendlyWorkflowFailureMessage(job.log, code);
       }
-      addJobEvent(job, job.status, job.message, { exitCode: code, productName: job.productName, outputId, finalizationKind: kind });
+
+      if (job.status === "done") {
+        providerCircuitBreaker.recordSuccess(provider);
+        job.errorCode = "";
+        job.recovery = { ...normalizeRecoveryState(job.recovery), nextRetryAt: "", exhausted: false, lastClassification: "", lastErrorCode: "" };
+        finishAttemptRecord(job, attemptRecord, "done");
+      } else if (workflow.cancelRequested || kind === "cancel") {
+        finishAttemptRecord(job, attemptRecord, job.status);
+      } else if (workflow.shutdownRequested || kind === "shutdown") {
+        failure = classifyWorkflowFailure({ message: job.message, log: job.log, exitCode: code, timedOut: false });
+        finishAttemptRecord(job, attemptRecord, "interrupted", failure);
+        const recovery = normalizeRecoveryState(job.recovery);
+        recovery.nextRetryAt = new Date(Date.now() + startupRecoveryDelayMs()).toISOString();
+        recovery.lastClassification = "retryable";
+        recovery.lastErrorCode = "SERVICE_RESTART";
+        recovery.reason = "service-restart";
+        job.recovery = recovery;
+      } else {
+        failure = classifyWorkflowFailure({
+          errorCode: job.errorCode,
+          message: job.message,
+          log: text(job.log).slice(attemptRecord.logStart || 0),
+          exitCode: code,
+          timedOut: workflow.timedOut || kind === "timeout",
+          incomplete: job.status === "partial",
+        });
+        providerCircuitBreaker.recordFailure(provider, failure);
+        finishAttemptRecord(job, attemptRecord, job.status, failure);
+        recoveryScheduled = scheduleAutomaticRecovery(job, failure);
+        if (!recoveryScheduled) {
+          job.status = output && hasVisibleOutput(output) ? "partial" : "failed";
+          if (failure.retryable && normalizeRecoveryState(job.recovery).exhausted) {
+            job.message = output && hasVisibleOutput(output)
+              ? "自动恢复次数已用完，已保留成功图片，可点击“继续生成缺失图片”。"
+              : "自动恢复次数已用完，任务素材已保留，可点击“继续生成”。";
+          } else if (failure.category === "ambiguous") {
+            job.message = failure.userMessage;
+          }
+        }
+      }
+      addJobEvent(job, job.status, job.message, {
+        exitCode: code,
+        productName: job.productName,
+        outputId,
+        finalizationKind: kind,
+        provider,
+        classification: failure?.category || "",
+        recoveryScheduled,
+      });
     } catch (finalizeError) {
       job.status = "failed";
       job.message = finalizeError instanceof Error ? finalizeError.message : String(finalizeError);
-      addJobEvent(job, "failed", job.message, { productName: job.productName, outputId: job.outputFolderName || job.outputId });
+      failure = classifyWorkflowFailure({ message: job.message, exitCode: 1 });
+      providerCircuitBreaker.recordFailure(provider, failure);
+      if (attemptRecord.outcome === "running") finishAttemptRecord(job, attemptRecord, "failed", failure);
+      recoveryScheduled = scheduleAutomaticRecovery(job, failure);
+      addJobEvent(job, job.status, job.message, {
+        productName: job.productName,
+        outputId: job.outputFolderName || job.outputId,
+        provider,
+        classification: failure.category,
+        recoveryScheduled,
+      });
     } finally {
       job.updatedAt = new Date().toISOString();
       if (currentWorkflow === workflow) currentWorkflow = null;
       submissionGate.release(lease.token);
       activeJobId = submissionGate.snapshot()?.jobId || null;
       await persistTasks().catch((persistError) => console.warn(`保存工作流最终状态失败：${persistError instanceof Error ? persistError.message : String(persistError)}`));
+      if (job.status === "recovery-wait" && !shuttingDown) armRecoveryTimer(job);
     }
   });
 
@@ -1899,9 +2234,10 @@ async function runWorkflow(job, lease) {
   child.on("close", (code) => workflow.finalize({ kind: "close", code }));
 }
 
-function spawnWorkflowChild(job) {
+function spawnWorkflowChild(job, provider = "") {
   const commonEnv = {
     ...process.env,
+    IMAGE_PROVIDER: provider || process.env.IMAGE_PROVIDER,
     WORKSPACE_DIR: rootDir,
     DROP_INPUT_DIR: inputRoot,
     DROP_OUTPUT_DIR: outputRoot,
@@ -1931,6 +2267,18 @@ async function handleCancelJob(url, res) {
   const job = jobs.get(jobId);
   if (!job) return sendJson(res, 404, { error: "任务不存在。", code: "JOB_NOT_FOUND" });
   if (["cancelled", "done", "partial", "failed", "interrupted"].includes(job.status)) return sendJson(res, 200, job);
+  if (job.status === "recovery-wait") {
+    const timer = recoveryTimers.get(job.id);
+    if (timer) clearTimeout(timer);
+    recoveryTimers.delete(job.id);
+    job.status = job.output && hasVisibleOutput(job.output) ? "partial" : "cancelled";
+    job.message = job.status === "partial" ? "已停止自动恢复，成功图片仍然保留。" : "已停止自动恢复。";
+    job.recovery = { ...normalizeRecoveryState(job.recovery), nextRetryAt: "", reason: "cancelled" };
+    job.updatedAt = new Date().toISOString();
+    addJobEvent(job, "recovery-cancelled", job.message);
+    await persistTasks();
+    return sendJson(res, 200, job);
+  }
   const workflow = currentWorkflow;
   if (!workflow || workflow.jobId !== jobId) {
     const active = submissionGate.snapshot();
@@ -1960,15 +2308,61 @@ async function handleCancelJob(url, res) {
   return sendJson(res, 200, job);
 }
 
+async function handleRetryJob(url, res) {
+  const jobId = decodeURIComponent(url.pathname.replace("/api/jobs/", "").replace(/\/retry$/, ""));
+  const job = jobs.get(jobId);
+  if (!job) return sendJson(res, 404, { error: "任务不存在。", code: "JOB_NOT_FOUND" });
+  if (currentWorkflow?.jobId === jobId || ["receiving", "submitting", "queued", "running", "recovering", "canceling"].includes(job.status)) {
+    return sendJson(res, 202, job);
+  }
+  if (normalizeRecoveryState(job.recovery).lastClassification === "ambiguous") {
+    return sendJson(res, 409, {
+      error: "供应商受理状态仍不明确。为避免重复扣费，必须先由管理员核对供应商任务后再继续。",
+      code: "PROVIDER_ACCEPTANCE_AMBIGUOUS",
+    });
+  }
+  if (!job.materialDir || !job.outputFolderName) {
+    return sendJson(res, 409, { error: "任务素材未完整保存，无法继续生成，请重新提交。", code: "JOB_INPUT_NOT_RECOVERABLE" });
+  }
+  const timer = recoveryTimers.get(job.id);
+  if (timer) clearTimeout(timer);
+  recoveryTimers.delete(job.id);
+  job.recovery = { ...normalizeRecoveryState(job.recovery), automaticAttempts: 0, nextRetryAt: "", exhausted: false };
+  const started = await triggerJobRecovery(job, "manual");
+  if (!started) {
+    return sendJson(res, 202, job);
+  }
+  return sendJson(res, 202, job);
+}
+
 async function finalizeWorkflowWithoutChild(job, lease, error, detail = {}) {
+  const failure = classifyWorkflowFailure({
+    errorCode: error?.code,
+    message: error instanceof Error ? error.message : String(error),
+    log: text(job.log).slice(Number(detail.attemptRecord?.logStart || 0)),
+    exitCode: 1,
+  });
   job.status = "failed";
-  job.errorCode = text(error?.code) || "WORKFLOW_PREFLIGHT_FAILED";
+  job.errorCode = failure.code || text(error?.code) || "WORKFLOW_PREFLIGHT_FAILED";
   job.message = error instanceof Error ? error.message : String(error);
   job.updatedAt = new Date().toISOString();
-  addJobEvent(job, "failed", job.message, { productName: job.productName, outputId: job.outputFolderName || job.outputId, ...detail });
+  const provider = text(detail.provider || normalizeRecoveryState(job.recovery).currentProvider || process.env.IMAGE_PROVIDER);
+  providerCircuitBreaker.recordFailure(provider, failure);
+  if (detail.attemptRecord) finishAttemptRecord(job, detail.attemptRecord, "failed", failure);
+  const recoveryScheduled = scheduleAutomaticRecovery(job, failure);
+  if (!recoveryScheduled && failure.category === "ambiguous") job.message = failure.userMessage;
+  addJobEvent(job, job.status, job.message, {
+    productName: job.productName,
+    outputId: job.outputFolderName || job.outputId,
+    stage: detail.stage,
+    provider,
+    classification: failure.category,
+    recoveryScheduled,
+  });
   submissionGate.release(lease.token);
   activeJobId = submissionGate.snapshot()?.jobId || null;
   await persistTasks().catch((persistError) => console.warn(`保存预检失败状态失败：${persistError instanceof Error ? persistError.message : String(persistError)}`));
+  if (job.status === "recovery-wait" && !shuttingDown) armRecoveryTimer(job);
 }
 
 async function validateWorkflowInput(job) {
@@ -2560,15 +2954,14 @@ function buildBriefExpansionPrompt(rawBriefText, context, fallback) {
     "本次必须覆盖的卖点方向：",
     userSeeds.map((point) => `- ${point}`).join("\n"),
     generationRuleBlock,
-    "公共核心规则必须覆盖所有平台：Amazon 也必须执行同一主体不同形态、独立卖点、独立场景、构图去重和卖点证明矩阵；平台规则只改变信息密度和视觉克制程度。",
+    "公共核心规则必须覆盖所有平台：每个平台都必须执行同一主体不同形态、独立卖点、独立场景、构图去重和卖点证明矩阵；平台规则只改变风格、信息密度、内容节奏和禁用项。",
     productSpecificExpansionRule,
     "跨品类污染禁止：输出中不得出现任何非当前商品品类的案例词、道具、使用动作或场景描述；如果不确定当前品类，只能依据产品图识别摘要、产品名称和用户作图重点补齐。",
-    strategy.kind === "amazon"
-      ? "Amazon 平台风格：画面偏 clean marketplace product listing，构图精炼克制，避免夸张促销贴、虚假认证、评分星级、Best Seller 徽章。文案语言必须以输出语言策略为准，不由 Amazon 平台自动决定。"
-      : "国内平台风格：画面适合淘宝/天猫/抖音/小红书移动端电商图，信息更丰富、卖点更直接，但避免促销爆炸贴、平台水印和廉价杂乱。文案语言必须以输出语言策略为准，不由国内平台自动决定。",
-    strategy.outputLanguage === "English"
-      ? "English 语言规则：所有新增可见营销文案、标题、副标题、标签和可见展示名必须是英文；如果原始商品名是中文，必须转成自然英文展示名。"
-      : "简体中文语言规则：所有新增可见营销文案、标题、副标题、标签和可见展示名必须是简体中文；如果原始商品名是英文，必须转成自然中文展示名。",
+    `平台视觉合同：${strategy.styleInstruction}。文案语言必须以输出语言策略为准，不能由平台自动决定。`,
+    `语言规则：${outputLanguageInstruction(strategy.outputLanguage)}`,
+    usesEnglishLanguageBaseline(strategy.outputLanguage) && strategy.outputLanguage !== "English"
+      ? `适配基线：沿用 English 版本的分镜结构、信息层级和营销含义，但最终可见展示名及每条可见文案必须自然翻译为 ${strategy.outputLanguage}，不得直接显示英文源文案。`
+      : "",
     "禁止出现在输出中的内部词：用户当前输入、用户原始输入、产品图视觉识别摘要、扩写备注、本地规则扩写、接口、prompt、schema、工作流、案例学习库、页面模块。",
     "不得虚构未提供的具体数值、认证、材质等级、检测报告、分贝、重量克数、承重、保温时长、价格、销量、品牌授权。",
     "长期复用规则必须进入画面要求：保持主体特征不变；每张独立场景；每张独立卖点；允许多元素突出卖点；辅助元素只服务卖点；不要只复制同一个产品换背景。",
@@ -2638,7 +3031,7 @@ function defaultDemandBrief({ productName, rawBriefText, referenceNames = [], pr
     extractBriefField(rawBriefText, ["禁用元素", "禁用", "banned elements"]),
     strategy.bannedElements
   );
-  const specs = extractBriefField(rawBriefText, ["规格参数", "规格", "参数", "specs"]) || (strategy.outputLanguage === "English"
+  const specs = extractBriefField(rawBriefText, ["规格参数", "规格", "参数", "specs"]) || (usesEnglishLanguageBaseline(strategy.outputLanguage)
     ? "Not provided. Do not invent dimensions, test data, certifications, materials, price, sales volume, or performance claims."
     : "未提供。不得自行编造尺寸、检测数据、认证、材质等级、价格、销量或功效参数。");
   return `商品作图需求模板
@@ -2753,7 +3146,7 @@ function normalizeExpandedBrief(expanded, fallback, context) {
     productName: context.fallbackProductName || productName,
     outputLanguage: strategy.outputLanguage,
   }), "人群");
-  clean = ensureBriefField(clean, "规格参数", strategy.outputLanguage === "English"
+  clean = ensureBriefField(clean, "规格参数", usesEnglishLanguageBaseline(strategy.outputLanguage)
     ? "Not provided. Do not invent dimensions, test data, certifications, materials, price, sales volume, or performance claims."
     : "未提供。不得自行编造尺寸、检测数据、认证、材质等级、价格、销量或功效参数。");
   const validationContext = {
@@ -2781,61 +3174,16 @@ function platformStrategy(rawBriefText = "", generationRule = null) {
   const explicit = extractBriefField(rawBriefText, ["目标平台", "平台", "电商平台", "target platform", "platform"]);
   const explicitLanguage = extractBriefField(rawBriefText, ["输出语言", "language", "output language"]);
   const outputLanguage = normalizeOutputLanguage(generationRule?.outputLanguage || explicitLanguage || (/english|英文|英语/i.test(rawBriefText) ? "English" : "简体中文"));
-  const ruleText = [
-    generationRule?.platformRuleProfile,
-    generationRule?.platformRuleName,
-    generationRule?.targetPlatform,
-    generationRule?.platformRuleReason,
-  ].filter(Boolean).join(" ");
-  const ruleIsAmazon = /amazon|亚马逊|overseas marketplace|marketplace product listing/i.test(ruleText);
-  if (generationRule && ruleIsAmazon) {
-    return {
-      kind: "amazon",
-      platform: generationRule.targetPlatform || "Amazon",
-      outputLanguage,
-      defaultAudience: "Amazon shoppers looking for clear product benefits and trustworthy everyday use",
-      bannedElements: "competitor logos; platform watermarks; fake certifications; fake reviews; rating stars; Best Seller badges; Amazon Choice badges; coupons; exaggerated sale stickers; QR codes; prices; sales volume; unreadable random text; mixed-language marketing copy; unsupported technical claims",
-      briefNote: `平台风格使用 Amazon 精简可信商品图规则；新增可见文案必须统一使用 ${outputLanguage}。平台规则：${generationRule.platformRuleName || "Amazon"}；语言规则：${generationRule.languageRuleName || outputLanguage}。`,
-    };
-  }
-  if (generationRule && generationRule.platformRuleProfile === "domestic-default") {
-    return {
-      kind: "domestic",
-      platform: generationRule.targetPlatform || explicit || "通用电商",
-      outputLanguage,
-      defaultAudience: "关注实用性、日常使用和性价比的电商用户",
-      bannedElements: "竞品商标；平台水印；夸张促销爆炸贴；虚假参数；虚构认证；二维码；价格/销量信息；混合语言营销文案；与商品无关的杂乱背景；内部流程词或页面模块名",
-      briefNote: `平台风格使用国内移动端电商规则，信息更丰富、卖点更直接；新增可见文案必须统一使用 ${outputLanguage}。平台规则：${generationRule.platformRuleName || "默认国内平台"}；语言规则：${generationRule.languageRuleName || outputLanguage}。`,
-    };
-  }
-  const haystack = `${explicit}\n${rawBriefText}`.toLowerCase();
-  if (/amazon|亚马逊/.test(haystack)) {
-    return {
-      kind: "amazon",
-      platform: "Amazon",
-      outputLanguage,
-      defaultAudience: "Amazon shoppers looking for practical everyday products",
-      bannedElements: "competitor logos; platform watermarks; fake certifications; fake reviews; rating stars; Best Seller badges; exaggerated sale stickers; QR codes; prices; sales volume; unreadable random text; mixed-language marketing copy; unsupported technical claims",
-      briefNote: `Use clean Amazon-style product listing images. Newly added visible marketing copy must stay entirely in ${outputLanguage}.`,
-    };
-  }
-  if (/tiktok|tik tok/.test(haystack)) {
-    return {
-      kind: "tiktok",
-      platform: "TikTok Shop",
-      outputLanguage,
-      defaultAudience: "短视频电商用户",
-      bannedElements: "竞品商标；平台水印；虚假认证；夸张促销爆炸贴；二维码；价格/销量信息；随机乱码；错误文字；未提供的功效参数",
-      briefNote: "画面应适合短视频电商货架与移动端浏览，卖点短、画面证据强，避免平台水印和夸张促销贴。",
-    };
-  }
+  const requestedPlatform = generationRule?.targetPlatform || explicit;
+  const profile = platformStyleProfile(requestedPlatform, "国内通用");
   return {
-    kind: "domestic",
-    platform: explicit || "通用电商",
+    kind: profile.id,
+    platform: profile.label,
     outputLanguage,
-    defaultAudience: "关注实用性、日常使用和性价比的电商用户",
-    bannedElements: "竞品商标；平台水印；夸张促销爆炸贴；随机英文；错误中文；虚假参数；虚构认证；二维码；价格/销量信息；与商品无关的杂乱背景；内部流程词或页面模块名",
-    briefNote: "画面适合移动端电商浏览，文字短、准、大层级，卖点必须能被画面证明。",
+    defaultAudience: profile.defaultAudience,
+    bannedElements: profile.bannedElements,
+    styleInstruction: profile.generatorStyle,
+    briefNote: `${profile.briefNote} 新增可见文案必须统一使用 ${outputLanguage}。平台规则：${generationRule?.platformRuleName || profile.label}；语言规则：${generationRule?.languageRuleName || outputLanguage}。`,
   };
 }
 
@@ -2879,8 +3227,9 @@ function inferProductName({ rawBriefText = "", productName = "", referenceNames 
   if (direct) return direct;
 
   const strategyLanguage = outputLanguage || platformStrategy(rawBriefText).outputLanguage;
+  const englishBaseline = usesEnglishLanguageBaseline(strategyLanguage);
   const source = `${productImageAnalysis}\n${rawBriefText}`;
-  if (strategyLanguage === "English") {
+  if (englishBaseline) {
     if (/机械鸭|鸭形(?:机器人|玩具)?|鸭子机器人|duck[- ]?(?:shaped|inspired|robot|toy)|articulated duck/i.test(source)) return "Articulated Duck Robot Toy";
     if (/电动车|自行车|车篮|篮筐|前篮|后篮|骑行|bike basket|bicycle basket/i.test(source)) return "Waterproof E-Bike Basket";
     if (/垃圾袋|trash bag|抽绳|艾草|除臭|防臭/i.test(source)) return "Drawstring Odor-Control Trash Bags";
@@ -2898,7 +3247,7 @@ function inferProductName({ rawBriefText = "", productName = "", referenceNames 
     const stripped = cleanProductName(stripExtension(name).replace(/^参考图\d+[-_ ]*/, "").replace(/^(主参考图|细节图|结构图|场景参考)[-_ ]*/, ""));
     if (stripped && !/图片处理需求|参考图|image|photo|product/i.test(stripped)) return stripped;
   }
-  return strategyLanguage === "English" ? "Reference Product" : "未命名商品";
+  return englishBaseline ? "Reference Product" : "未命名商品";
 }
 
 function cleanProductName(value) {
@@ -2914,8 +3263,8 @@ function cleanProductName(value) {
 
 function inferVisibleProductName({ rawBriefText = "", productName = "", productImageAnalysis = "", outputLanguage = "" }) {
   const explicit = cleanProductName(extractBriefField(rawBriefText, ["可见展示名", "展示名", "visible product name", "display name"]));
-  if (explicit) return outputLanguage === "English" ? englishDisplayName(explicit, rawBriefText, productImageAnalysis) : chineseDisplayName(explicit, rawBriefText, productImageAnalysis);
-  return outputLanguage === "English"
+  if (explicit) return usesEnglishLanguageBaseline(outputLanguage) ? englishDisplayName(explicit, rawBriefText, productImageAnalysis) : chineseDisplayName(explicit, rawBriefText, productImageAnalysis);
+  return usesEnglishLanguageBaseline(outputLanguage)
     ? englishDisplayName(productName, rawBriefText, productImageAnalysis)
     : chineseDisplayName(productName, rawBriefText, productImageAnalysis);
 }
@@ -2977,33 +3326,34 @@ function inferAudience({ rawBriefText = "", productImageAnalysis = "", productNa
   const explicit = extractBriefField(rawBriefText, ["人群", "目标人群", "audience"]);
   if (explicit) return explicit;
   const source = `${productName}\n${rawBriefText}\n${productImageAnalysis}`;
+  const englishBaseline = usesEnglishLanguageBaseline(outputLanguage);
   if (/破壁机|搅拌机|料理机|豆浆机|果汁机|榨汁机|blender|mixer|smoothie/i.test(source)) {
-    return outputLanguage === "English"
+    return englishBaseline
       ? "Home cooks, breakfast drink makers, families, and users who want convenient everyday blending"
       : "家庭早餐用户、喜欢制作饮品的人群、亲子家庭和注重厨房效率的日常用户";
   }
   if (/电动车|自行车|车篮|篮筐|前篮|后篮|骑行|bike basket|bicycle basket/i.test(source)) {
-    return outputLanguage === "English"
+    return englishBaseline
       ? "E-bike and bicycle commuters, grocery-run riders, delivery users, and daily riders who need waterproof front storage"
       : "电动车/自行车通勤用户、买菜接送用户、外卖配送用户和需要雨天收纳的日常骑行人群";
   }
-  if (/垃圾袋|trash bag|抽绳|艾草|除臭|防臭/i.test(source)) return outputLanguage === "English" ? "Household users who need daily kitchen and home cleanup" : "家庭厨房清洁用户、日常厨余处理和高频换袋人群";
-  if (/雨伞|伞|umbrella/i.test(source)) return outputLanguage === "English" ? "Commuters and outdoor users who need portable rain and sun protection" : "通勤出行用户、学生和需要晴雨防护的户外人群";
+  if (/垃圾袋|trash bag|抽绳|艾草|除臭|防臭/i.test(source)) return englishBaseline ? "Household users who need daily kitchen and home cleanup" : "家庭厨房清洁用户、日常厨余处理和高频换袋人群";
+  if (/雨伞|伞|umbrella/i.test(source)) return englishBaseline ? "Commuters and outdoor users who need portable rain and sun protection" : "通勤出行用户、学生和需要晴雨防护的户外人群";
   if (/机械鸭|鸭形(?:机器人|玩具)?|鸭子机器人|duck[- ]?(?:shaped|inspired|robot|toy)|articulated duck/i.test(source)) {
-    return outputLanguage === "English"
+    return englishBaseline
       ? "Families with children, hands-on toy fans, and gift buyers looking for articulated tabletop play"
       : "亲子家庭、动手玩具爱好者和关注桌面互动的礼物购买人群";
   }
-  if (/机器人|robot|AI陪伴|智能对话|LED表情|豆包|deepseek/i.test(source)) return outputLanguage === "English" ? "Families with children, desktop gadget fans, and gift buyers looking for AI companionship" : "儿童亲子家庭、桌面潮玩用户和科技礼物购买人群";
-  if (/椅|凳|chair|stool/i.test(source)) return outputLanguage === "English" ? "Home office, study, vanity and compact-space users who need mobile seating" : "居家办公、学习书桌、梳妆台和小户型移动座椅用户";
-  if (/鞋|shoe|sneaker|footwear/i.test(source)) return outputLanguage === "English" ? "Daily walking, commuting and casual outfit users" : "日常通勤、休闲出行和关注舒适穿搭的人群";
+  if (/机器人|robot|AI陪伴|智能对话|LED表情|豆包|deepseek/i.test(source)) return englishBaseline ? "Families with children, desktop gadget fans, and gift buyers looking for AI companionship" : "儿童亲子家庭、桌面潮玩用户和科技礼物购买人群";
+  if (/椅|凳|chair|stool/i.test(source)) return englishBaseline ? "Home office, study, vanity and compact-space users who need mobile seating" : "居家办公、学习书桌、梳妆台和小户型移动座椅用户";
+  if (/鞋|shoe|sneaker|footwear/i.test(source)) return englishBaseline ? "Daily walking, commuting and casual outfit users" : "日常通勤、休闲出行和关注舒适穿搭的人群";
   if (/牛至油|oregano\s*oil|膳食补充剂|营养补充剂|保健品|软胶囊|胶囊|capsules?|softgels?|dietary\s*supplement|supplement/i.test(source)) {
-    return outputLanguage === "English"
+    return englishBaseline
       ? "Adults looking for a convenient, clearly presented everyday dietary supplement routine"
       : "关注日常营养补充便利性、配方信息和包装细节的成年消费者";
   }
-  if (/水壶|水杯|保温杯|water\s*bottle|drinking\s*bottle|drinkware|cup/i.test(source)) return outputLanguage === "English" ? "Commuters, students and outdoor users who need portable drinkware" : "通勤用户、学生和需要便携饮水的户外人群";
-  return outputLanguage === "English" ? "Everyday shoppers who need practical product benefits" : "关注实用性、日常使用和性价比的电商用户";
+  if (/水壶|水杯|保温杯|water\s*bottle|drinking\s*bottle|drinkware|cup/i.test(source)) return englishBaseline ? "Commuters, students and outdoor users who need portable drinkware" : "通勤用户、学生和需要便携饮水的户外人群";
+  return englishBaseline ? "Everyday shoppers who need practical product benefits" : "关注实用性、日常使用和性价比的电商用户";
 }
 
 function inferCategory({ rawBriefText = "", productImageAnalysis = "", productName = "", outputLanguage = "" }) {
@@ -3013,7 +3363,7 @@ function inferCategory({ rawBriefText = "", productImageAnalysis = "", productNa
   const explicit = extractBriefField(rawBriefText, ["类目", "品类", "category"]);
   if (explicit) return explicit;
   return inferCategoryFromSource(rawBriefText, outputLanguage)
-    || (outputLanguage === "English" ? "Consumer Product" : "通用电商商品");
+    || (usesEnglishLanguageBaseline(outputLanguage) ? "Consumer Product" : "通用电商商品");
 }
 
 function inferSellingPoints({ productName = "", rawBriefText = "", productImageAnalysis = "", outputLanguage = "" }) {
@@ -3322,7 +3672,7 @@ function isProtectedWriteRequest(req, url) {
   if (req.method !== "POST") return false;
   return url.pathname === "/api/jobs"
     || url.pathname === "/api/brief-expansions"
-    || /^\/api\/jobs\/[^/]+\/cancel$/.test(url.pathname);
+    || /^\/api\/jobs\/[^/]+\/(?:cancel|retry)$/.test(url.pathname);
 }
 
 async function readJson(filePath) {

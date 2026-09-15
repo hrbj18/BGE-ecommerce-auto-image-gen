@@ -6,12 +6,26 @@ import path from "node:path";
 import { createHash, randomFillSync } from "node:crypto";
 import sharp from "sharp";
 import type { AppConfig, BrandProfile, ProductTask, ReferenceAnalysis } from "../src/types.ts";
-import { OpenAiImageGenerator } from "../src/openai-image-generator.ts";
+import { buildVisualReviewRetryPrompt, OpenAiImageGenerator } from "../src/openai-image-generator.ts";
 import {
   AiEchoTaskLedger,
   createAiEchoTaskFingerprint,
   type AiEchoTaskIdentity
 } from "../src/aiecho-task-ledger.ts";
+
+process.env.IMAGE_FULL_FAILURE_PROBE_ENABLED = "false";
+
+test("text-boundary retry switches to a conservative inset layout on round two", () => {
+  const prompt = buildVisualReviewRetryPrompt(
+    { prompt: "CURRENT FRAME MISSION", auditSummary: "Keep the mouse as the hero." },
+    ["TEXT_BOUNDARY_VIOLATION: right-side headline is clipped by the canvas edge"],
+    2
+  );
+  assert.match(prompt, /CONSERVATIVE TEXT-LAYOUT REPAIR/);
+  assert.match(prompt, /x=15%-85%/);
+  assert.match(prompt, /left-align every line/);
+  assert.match(prompt, /Do not repeat the previous right-edge placement/);
+});
 
 function assertCompactDirectedPromptSet(prompts: string[], expectedCount = 13): void {
   assert.equal(prompts.length, expectedCount);
@@ -32,6 +46,10 @@ test("native generator submits visual-controller prompts for five main images", 
   await fs.writeFile(productPath, Buffer.alloc(260_000, 1));
   const prompts: string[] = [];
   const originalFetch = globalThis.fetch;
+  const previousProbeDelay = process.env.IMAGE_FULL_FAILURE_PROBE_DELAY_MS;
+  const previousProbeEnabled = process.env.IMAGE_FULL_FAILURE_PROBE_ENABLED;
+  process.env.IMAGE_FULL_FAILURE_PROBE_ENABLED = "true";
+  process.env.IMAGE_FULL_FAILURE_PROBE_DELAY_MS = "0";
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith("/result")) {
@@ -55,9 +73,11 @@ test("native generator submits visual-controller prompts for five main images", 
     );
   } finally {
     globalThis.fetch = originalFetch;
+    restoreTestEnvironment("IMAGE_FULL_FAILURE_PROBE_DELAY_MS", previousProbeDelay);
+    restoreTestEnvironment("IMAGE_FULL_FAILURE_PROBE_ENABLED", previousProbeEnabled);
   }
 
-  assert.equal(prompts.length, 5);
+  assert.equal(prompts.length, 6);
   for (const prompt of prompts) {
     assert.match(prompt, /^CURRENT FRAME MISSION/);
     assert.match(prompt, /FRAME EXECUTION/);
@@ -73,7 +93,7 @@ test("native generator submits visual-controller prompts for five main images", 
   assert.match(prompts.join("\n"), /白鞋|运动鞋/);
 });
 
-test("openai generator does not retry a gateway capacity rejection", async () => {
+test("openai generator avoids immediate capacity retries and makes one serial recovery probe", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "native-openai-capacity-"));
   const productPath = path.join(tmp, "product.png");
   await writeNoiseImage(productPath, 640, 640);
@@ -82,6 +102,10 @@ test("openai generator does not retry a gateway capacity rejection", async () =>
   config.openai.apiKey = "test-key";
   const task = { ...makeTask(tmp, productPath), mainImageCount: 1, detailImageCount: 0, generateDetail: false };
   const originalFetch = globalThis.fetch;
+  const previousProbeDelay = process.env.IMAGE_FULL_FAILURE_PROBE_DELAY_MS;
+  const previousProbeEnabled = process.env.IMAGE_FULL_FAILURE_PROBE_ENABLED;
+  process.env.IMAGE_FULL_FAILURE_PROBE_ENABLED = "true";
+  process.env.IMAGE_FULL_FAILURE_PROBE_DELAY_MS = "0";
   let calls = 0;
   globalThis.fetch = (async () => {
     calls += 1;
@@ -102,9 +126,11 @@ test("openai generator does not retry a gateway capacity rejection", async () =>
       ),
       /所有主图均生成失败/
     );
-    assert.equal(calls, 1);
+    assert.equal(calls, 2);
   } finally {
     globalThis.fetch = originalFetch;
+    restoreTestEnvironment("IMAGE_FULL_FAILURE_PROBE_DELAY_MS", previousProbeDelay);
+    restoreTestEnvironment("IMAGE_FULL_FAILURE_PROBE_ENABLED", previousProbeEnabled);
   }
 });
 

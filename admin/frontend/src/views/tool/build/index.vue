@@ -100,7 +100,7 @@ import draggable from "vuedraggable/dist/vuedraggable.common"
 import ClipboardJS from 'clipboard'
 //@ts-ignore
 import beautifier from 'js-beautify'
-import logo from '@/assets/logo/logo.png'
+import logo from '@/assets/logo/haike-mark.svg'
 import { inputComponents, selectComponents, layoutComponents, formConf as formConfData } from '@/utils/generator/config'
 import { beautifierConf } from '@/utils/index'
 import { drawingDefaultValue, initDrawingDefaultValue, cleanDrawingDefaultValue } from '@/utils/generator/drawingDefault'

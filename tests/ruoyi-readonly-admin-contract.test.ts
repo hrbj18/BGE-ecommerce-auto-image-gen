@@ -51,6 +51,8 @@ test("the desktop launchers serialize startup, refresh stale backend artifacts, 
   assert.match(portalStart, /-WindowStyle Hidden/);
   assert.match(portalStart, /docker start \"bge-ruoyi-mysql\" \"bge-ruoyi-redis\"/);
   assert.match(portalStart, /Wait-InfrastructurePorts/);
+  assert.match(portalStart, /BGE_RUOYI_MYSQL_PORT/);
+  assert.match(portalStart, /BGE_RUOYI_REDIS_PORT/);
   assert.match(portalStart, /Test-PortalConfiguration/);
   assert.match(portalStart, /Import-PortalEnvironment/);
   assert.match(portalStart, /Test-BgeBackendArtifactFresh/);
@@ -64,9 +66,11 @@ test("the desktop launchers serialize startup, refresh stale backend artifacts, 
   assert.match(portalStart, /Local\\BGE-RuoYi-Startup/);
   assert.match(portalStart, /WaitOne\(\[TimeSpan\]::FromMinutes\(4\)\)/);
   assert.match(portalStart, /ReleaseMutex\(\)/);
-  assert.match(portalStart, /Start-Process -FilePath \$EntryUri/);
-  assert.match(portalStart, /\$portalUri = 'http:\/\/127\.0\.0\.1:8001\/portal\/'/);
-  assert.match(portalStart, /ValidateSet\('http:\/\/127\.0\.0\.1:8001\/', 'http:\/\/127\.0\.0\.1:8001\/portal\/'\)/);
+  assert.match(portalStart, /foreach \(\$uri in \$entryUris\)/);
+  assert.match(portalStart, /Start-Process -FilePath \$uri/);
+  assert.match(portalStart, /@\('http:\/\/127\.0\.0\.1:8001\/', 'http:\/\/127\.0\.0\.1:8003\/portal\/'\)/);
+  assert.match(portalStart, /\$portalUri = 'http:\/\/127\.0\.0\.1:8003\/portal\/'/);
+  assert.match(portalStart, /ValidateSet\('http:\/\/127\.0\.0\.1:8001\/', 'http:\/\/127\.0\.0\.1:8003\/portal\/'\)/);
   assert.doesNotMatch(portalStart, /(?:password|secret|token)\s*=\s*['"][^'"]+['"]/i);
   assert.doesNotMatch(portalStart, /[^\x00-\x7F]/);
   assert.match(adminStart, /Update-BgeBackendArtifact/);
@@ -86,15 +90,17 @@ test("the desktop launchers serialize startup, refresh stale backend artifacts, 
   assert.doesNotMatch(nodeRefresh, /(?:password|secret|token)\s*=\s*['"][^'"]+['"]/i);
 });
 
-test("RuoYi BGE frontend remains read-only and releases polling and Blob resources", async () => {
+test("RuoYi BGE frontend limits writes to the dedicated retry action and releases polling and Blob resources", async () => {
   const [api, page, image] = await Promise.all([
     source("admin/frontend/src/api/bge/task.ts"),
     source("admin/frontend/src/views/bge/task/index.vue"),
     source("admin/frontend/src/views/bge/task/AuthenticatedImage.vue")
   ]);
 
-  assert.doesNotMatch(api, /method\s*:\s*["'](?:post|put|patch|delete)["']/i);
-  assert.doesNotMatch(page, />\s*(?:提交|取消|删除|重试|返工|下载)(?:任务|图片|成品)?\s*</);
+  assert.match(api, /retryBgeTask[\s\S]*method:\s*'post'/);
+  assert.doesNotMatch(api, /method\s*:\s*["'](?:put|patch|delete)["']/i);
+  assert.doesNotMatch(page, />\s*(?:提交|取消|删除|返工|下载)(?:任务|图片|成品)?\s*</);
+  assert.match(page, /v-hasPermi="\['bge:task:retry'\]"/);
   assert.match(page, /const POLL_INTERVAL_MS = 5000/);
   assert.match(page, /document\.hidden/);
   assert.match(page, /onBeforeUnmount\(\(\) =>/);
@@ -125,7 +131,9 @@ test("the dedicated database role is rebuilt from a four-item BGE read allowlist
   assert.match(sql, /'bge:task:list'/);
   assert.match(sql, /'bge:task:query'/);
   assert.match(sql, /'bge:output:view'/);
-  assert.doesNotMatch(sql, /bge:(?:task|output):(?!list|query|view)[a-z]+/i);
+  const viewerSection = sql.slice(sql.indexOf("SET @bge_role_id :="), sql.indexOf("SET @bge_operator_role_id :="));
+  assert.doesNotMatch(viewerSection, /bge:task:retry/);
+  assert.match(sql, /'bge:task:retry'/);
 });
 
 test("the unified 8001 entry keeps the workbench behind RuoYi authorization", async () => {
@@ -144,6 +152,9 @@ test("the unified 8001 entry keeps the workbench behind RuoYi authorization", as
   assert.match(start, /@\(8787, 8001, 8002, 8003, \$backendPort\)/);
   assert.match(start, /BGE_WORKBENCH_BASE = ['"]\/workbench\//);
   assert.match(workbenchVite, /base:\s*process\.env\.BGE_WORKBENCH_BASE \|\| ['"]\/['"]/);
+  assert.match(workbenchVite, /['"]\/portal-auth['"]:\s*\{/);
+  assert.match(workbenchVite, /['"]\/portal-api['"]:\s*\{/);
+  assert.match(workbenchVite, /['"]\/captchaImage['"]:\s*\{/);
   assert.match(sql, /'bge_operator'/);
   assert.match(sql, /'bge:workbench:use'/);
   const viewerSection = sql.slice(sql.indexOf("SET @bge_role_id :="), sql.indexOf("SET @bge_operator_role_id :="));
@@ -158,11 +169,12 @@ test("the unified 8001 entry keeps the workbench behind RuoYi authorization", as
 });
 
 test("self-service portal uses a dedicated no-menu role and a server-side ownership boundary", async () => {
-  const [portalSql, portalController, authController, userService, app, adminVite, start, security] = await Promise.all([
+  const [portalSql, portalController, authController, userService, userConstants, app, adminVite, start, security] = await Promise.all([
     source("admin/sql/002-bge-portal-users.sql"),
     source("admin/backend/ruoyi-bge/src/main/java/com/ruoyi/bge/controller/BgePortalController.java"),
     source("admin/backend/ruoyi-bge/src/main/java/com/ruoyi/bge/controller/PortalAuthController.java"),
     source("admin/backend/ruoyi-bge/src/main/java/com/ruoyi/bge/portal/PortalUserService.java"),
+    source("admin/backend/ruoyi-common/src/main/java/com/ruoyi/common/constant/UserConstants.java"),
     source("frontend/src/App.jsx"),
     source("admin/frontend/vite.config.ts"),
     source("admin/scripts/start-admin.ps1"),
@@ -184,6 +196,10 @@ test("self-service portal uses a dedicated no-menu role and a server-side owners
   assert.match(authController, /httpOnly\(true\)/);
   assert.match(userService, /PORTAL_ROLE = "bge_portal_user"/);
   assert.match(userService, /setRoleIds\(new Long\[\] \{ roleId \}\)/);
+  assert.match(userService, /loginService\.login\(username, request\.password\(\)/);
+  assert.doesNotMatch(userService, /hasPortalRole|requirePortalRole/);
+  assert.match(userService, /MAX_PASSWORD_LENGTH = UserConstants\.PASSWORD_MAX_LENGTH/);
+  assert.match(userConstants, /PASSWORD_MAX_LENGTH = 32/);
   assert.match(app, /PortalAccessPage/);
   assert.match(app, /\/portal-auth\/register/);
   assert.match(app, /\/portal-api/);
@@ -194,6 +210,70 @@ test("self-service portal uses a dedicated no-menu role and a server-side owners
   assert.match(start, /--port', '8003'/);
   assert.match(start, /BGE_WORKBENCH_BASE = ['"]\/portal\//);
   assert.match(security, /\/portal-auth\/login", "\/portal-auth\/register/);
+});
+
+test("points are server-side, idempotent and manageable without granting portal users admin menus", async () => {
+  const [sql, productSql, initializer, portalStart, service, adminService, portalController, adminController, portalApp, adminApi, adminPage] = await Promise.all([
+    source("admin/sql/003-bge-points.sql"),
+    source("admin/sql/004-bge-admin-product.sql"),
+    source("admin/scripts/initialize-admin-db.ps1"),
+    source("admin/scripts/start-user-portal.ps1"),
+    source("admin/backend/ruoyi-bge/src/main/java/com/ruoyi/bge/points/BgePointService.java"),
+    source("admin/backend/ruoyi-bge/src/main/java/com/ruoyi/bge/points/BgePointAdminService.java"),
+    source("admin/backend/ruoyi-bge/src/main/java/com/ruoyi/bge/controller/BgePortalPointController.java"),
+    source("admin/backend/ruoyi-bge/src/main/java/com/ruoyi/bge/controller/BgePointController.java"),
+    source("frontend/src/App.jsx"),
+    source("admin/frontend/src/api/bge/points.ts"),
+    source("admin/frontend/src/views/bge/points/index.vue")
+  ]);
+
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS bge_point_account/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS bge_point_ledger/);
+  assert.match(sql, /UNIQUE KEY uk_bge_point_charge_request \(request_key\)/);
+  assert.match(sql, /\('compact-1-2', '1k', 3\)/);
+  assert.match(sql, /\('standard-5-8', '4k', 52\)/);
+  assert.match(sql, /SELECT user_id, 30, 30 FROM sys_user WHERE status = '0' AND del_flag = '0'/);
+  assert.match(sql, /'bge:points:list'/);
+  assert.match(sql, /'bge:points:adjust'/);
+  assert.match(sql, /'bge:points:recharge:review'/);
+  assert.match(sql, /'bge:points:price:manage'/);
+  assert.match(sql, /DELETE FROM sys_menu WHERE perms = 'bge:points:manage'/);
+  assert.doesNotMatch(sql, /INSERT INTO sys_role_menu[\s\S]*bge_portal_user/);
+
+  assert.match(productSql, /CREATE TABLE IF NOT EXISTS bge_point_price_history/);
+  assert.match(productSql, /menu_name = '若依官网'/);
+  assert.match(productSql, /path IN \('monitor', 'tool'\)/);
+  assert.match(productSql, /path IN \('menu', 'dept', 'post', 'dict', 'config', 'notice'\)/);
+  assert.match(initializer, /004-bge-admin-product\.sql/);
+  assert.match(initializer, /pointsPermissionCount -ne 4/);
+  assert.match(portalStart, /function Sync-BgeDatabase/);
+  assert.ok((portalStart.match(/Sync-BgeDatabase/g) ?? []).length >= 3);
+
+  assert.match(service, /@Transactional[\s\S]*reserveGeneration/);
+  assert.match(service, /WHERE request_key = \? FOR UPDATE/);
+  assert.match(service, /WHERE user_id = \? AND balance >= \?/);
+  assert.match(service, /generation-refund:/);
+  assert.match(portalController, /@RequestMapping\("\/portal-api\/points"\)/);
+  assert.match(portalController, /@PreAuthorize\("isAuthenticated\(\)"\)/);
+  assert.match(service, /admin-adjust:/);
+  assert.match(service, /requestKey\(idempotencyKey\)/);
+  assert.match(adminService, /updatePrices/);
+  assert.match(adminService, /FOR UPDATE/);
+  assert.match(adminService, /bge_point_price_history/);
+  assert.match(adminService, /OVERDUE_RECHARGE_REVIEW/);
+  assert.match(adminController, /@ss\.hasPermi\('bge:points:adjust'\)/);
+  assert.match(adminController, /@ss\.hasPermi\('bge:points:recharge:review'\)/);
+  assert.match(adminController, /@ss\.hasPermi\('bge:points:price:manage'\)/);
+  assert.match(portalApp, /submitImageJobWithRecovery/);
+  assert.match(portalApp, /\/points\/recharges/);
+  assert.match(adminApi, /\/bge\/points\/recharges/);
+  assert.match(adminPage, /积分流水/);
+  assert.match(adminPage, /任务结算/);
+  assert.match(adminPage, /充值申请/);
+  assert.match(adminPage, /套餐价格/);
+  assert.match(adminPage, /异常对账/);
+  assert.match(adminApi, /\/bge\/points\/summary/);
+  assert.match(adminApi, /\/bge\/points\/reconciliation/);
 });
 
 test("RuoYi local bootstrap removes upstream demo and default-credential write paths", async () => {
@@ -234,7 +314,8 @@ test("RuoYi local bootstrap removes upstream demo and default-credential write p
   assert.match(recovery, /if \(\$mysqlExists -xor \$redisExists\)/);
   assert.match(recovery, /if \(\$mysqlExists -and -not \$validInfrastructure\)/);
   assert.match(recovery, /Backup-ReplacedCredential/);
-  assert.match(recovery, /127\.0\.0\.1:3306:3306/);
+  assert.match(recovery, /\$dbPort = '13306'/);
+  assert.match(recovery, /127\.0\.0\.1:\$\{dbPort\}:3306/);
   assert.match(recovery, /127\.0\.0\.1:6379:6379/);
   assert.doesNotMatch(recovery, /docker\s+(?:container\s+)?rm\b/i);
   assert.match(start, /-WorkingDirectory \$frontendRoot/);
@@ -248,4 +329,12 @@ test("RuoYi local bootstrap removes upstream demo and default-credential write p
   assert.match(encodingRepair, /mysql:8\.4/);
   assert.match(encodingRepair, /sys_menu current_row JOIN bge_encoding_menu reference_row/);
   assert.match(encodingRepair, /menu_name REGEXP '\^\[\?\]\+\$'/);
+});
+
+test("free integration checks never overwrite an existing portal task owner", async () => {
+  const integration = await source("admin/scripts/smoke-admin-integration.ps1");
+
+  assert.match(integration, /SELECT COUNT\(\*\) FROM bge_portal_job WHERE job_type = 'image' AND job_id = '\$escapedCandidateId'/);
+  assert.match(integration, /if \(\$existingOwnerCount -gt 0\) \{ continue \}/);
+  assert.doesNotMatch(integration, /ON DUPLICATE KEY UPDATE\s+owner_user_id/i);
 });

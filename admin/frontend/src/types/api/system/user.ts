@@ -13,6 +13,8 @@ export interface UserQueryParams extends PageDomain {
   status?: '0' | '1';
   /** 部门编号 */
   deptId?: number;
+  /** 账号等级角色 */
+  roleId?: number;
   /** 创建时间 */
   params?: {
     beginTime?: string;
@@ -52,10 +54,14 @@ export interface SysUser extends BaseEntity {
   dept?: SysDept;
   /** 角色对象 */
   roles?: SysRole[];
+  /** 用户列表中的主身份角色 */
+  roleId?: number;
   /** 角色组 */
   roleIds?: number[];
   /** 岗位组 */
   postIds?: number[];
+  /** 最后登录时间 */
+  loginDate?: string;
 }
 
 /** 注册信息 */

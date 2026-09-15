@@ -1,462 +1,590 @@
 <template>
-  <div class="app-container tree-sidebar-manage-wrap">
-    <tree-panel title="组织机构" :tree-data="deptOptions" search-placeholder="请输入部门名称" storage-key="dept-sidebar-width" :defaultExpandAll="true" @node-click="handleNodeClick" @refresh="getDeptTree" ref="deptTreeRef" />
-    <div class="tree-sidebar-content">
-      <div class="content-inner">
-        <el-form :model="queryParams" ref="queryRef" :inline="true" v-show="showSearch" label-width="68px">
-          <el-form-item label="用户名称" prop="userName">
-            <el-input v-model="queryParams.userName" placeholder="请输入用户名称" clearable style="width: 240px" @keyup.enter="handleQuery" />
+  <main class="account-page app-container">
+    <header class="page-heading">
+      <div>
+        <span class="page-kicker">ACCOUNTS</span>
+        <h1>账号管理</h1>
+      </div>
+      <el-button type="primary" :icon="Plus" @click="openCreate" v-hasPermi="['system:user:add']">新增账号</el-button>
+    </header>
+
+    <section class="identity-section" aria-labelledby="identity-title">
+      <div class="section-title">
+        <h2 id="identity-title">账号等级</h2>
+        <span>点击等级可筛选</span>
+      </div>
+      <div class="identity-groups">
+        <div v-for="group in identityGroups" :key="group.kind" class="identity-group">
+          <div class="group-label">
+            <el-icon><component :is="group.icon" /></el-icon>
+            {{ group.label }}
+          </div>
+          <div class="identity-row">
+            <button
+              v-for="identity in group.items"
+              :key="identity.roleKey"
+              type="button"
+              class="identity-summary"
+              :class="[`identity-summary--${identity.tone}`, { 'is-active': queryParams.roleId === identity.roleId }]"
+              @click="filterByIdentity(identity)"
+            >
+              <span class="identity-level">{{ identity.level }}</span>
+              <span class="identity-copy">
+                <strong>{{ identity.label }}</strong>
+                <small>{{ identity.shortDescription }}</small>
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="account-list" aria-labelledby="account-list-title">
+      <div class="list-toolbar">
+        <div class="section-title list-title">
+          <h2 id="account-list-title">账号列表</h2>
+          <span>共 {{ total }} 个</span>
+        </div>
+        <div class="filters">
+          <el-input
+            v-model="queryParams.userName"
+            clearable
+            class="search-input"
+            placeholder="搜索账号、昵称或手机号"
+            @keyup.enter="handleQuery"
+            @clear="handleQuery"
+          >
+            <template #prefix><el-icon><Search /></el-icon></template>
+          </el-input>
+          <el-select v-model="queryParams.roleId" clearable placeholder="全部等级" class="level-filter" @change="handleQuery">
+            <el-option v-for="identity in identities" :key="identity.roleKey" :label="identity.label" :value="identity.roleId" />
+          </el-select>
+          <el-select v-model="queryParams.status" clearable placeholder="全部状态" class="status-filter" @change="handleQuery">
+            <el-option label="正常使用" value="0" />
+            <el-option label="已停用" value="1" />
+          </el-select>
+          <el-tooltip content="重置筛选" placement="top">
+            <el-button :icon="Refresh" circle @click="resetQuery" />
+          </el-tooltip>
+        </div>
+      </div>
+
+      <el-table v-loading="loading" :data="userList" class="account-table" empty-text="暂无符合条件的账号">
+        <el-table-column label="账号" min-width="190">
+          <template #default="scope">
+            <div class="account-cell">
+              <span class="avatar" :class="`avatar--${identityFor(scope.row).tone}`">{{ initials(scope.row) }}</span>
+              <span>
+                <strong>{{ scope.row.nickName || scope.row.userName }}</strong>
+                <small>{{ scope.row.userName }}</small>
+              </span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="账号等级" min-width="150">
+          <template #default="scope">
+            <span class="identity-badge" :class="`identity-badge--${identityFor(scope.row).tone}`">
+              {{ identityFor(scope.row).label }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="可用范围" min-width="220">
+          <template #default="scope"><span class="scope-copy">{{ identityFor(scope.row).description }}</span></template>
+        </el-table-column>
+        <el-table-column label="联系方式" min-width="170">
+          <template #default="scope">
+            <div class="contact-cell">
+              <span>{{ scope.row.phonenumber || '未填写手机号' }}</span>
+              <small>{{ scope.row.email || '未填写邮箱' }}</small>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="账号状态" width="116" align="center">
+          <template #default="scope">
+            <el-switch
+              v-model="scope.row.status"
+              active-value="0"
+              inactive-value="1"
+              :disabled="scope.row.userId === 1"
+              @change="changeStatus(scope.row)"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column label="最后登录" width="168">
+          <template #default="scope">{{ displayTime(scope.row.loginDate) }}</template>
+        </el-table-column>
+        <el-table-column label="创建时间" width="168">
+          <template #default="scope">{{ displayTime(scope.row.createTime as string | undefined) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="142" align="center" fixed="right">
+          <template #default="scope">
+            <template v-if="scope.row.userId !== 1">
+              <el-tooltip content="编辑账号" placement="top">
+                <el-button link type="primary" :icon="Edit" @click="openEdit(scope.row)" v-hasPermi="['system:user:edit']" />
+              </el-tooltip>
+              <el-tooltip content="重置密码" placement="top">
+                <el-button link type="primary" :icon="Key" @click="resetPassword(scope.row)" v-hasPermi="['system:user:resetPwd']" />
+              </el-tooltip>
+              <el-tooltip content="删除账号" placement="top">
+                <el-button link type="danger" :icon="Delete" @click="removeAccount(scope.row)" v-hasPermi="['system:user:remove']" />
+              </el-tooltip>
+            </template>
+            <el-tooltip v-else content="内置超级管理员不可修改" placement="top">
+              <el-icon class="protected-icon"><Lock /></el-icon>
+            </el-tooltip>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <pagination
+        v-show="total > 0"
+        :total="total"
+        v-model:page="queryParams.pageNum"
+        v-model:limit="queryParams.pageSize"
+        @pagination="getList"
+      />
+    </section>
+
+    <el-dialog v-model="editorOpen" :title="editorTitle" width="760px" append-to-body destroy-on-close>
+      <el-form ref="userFormRef" :model="form" :rules="rules" label-position="top" class="account-form">
+        <div class="form-grid">
+          <el-form-item label="登录账号" prop="userName">
+            <el-input v-model="form.userName" :disabled="form.userId !== undefined" maxlength="30" placeholder="用于登录" />
+          </el-form-item>
+          <el-form-item label="显示名称" prop="nickName">
+            <el-input v-model="form.nickName" maxlength="30" placeholder="用户看到的名称" />
+          </el-form-item>
+          <el-form-item v-if="form.userId === undefined" label="登录密码" prop="password">
+            <el-input v-model="form.password" type="password" show-password maxlength="32" placeholder="6–32 位" />
           </el-form-item>
           <el-form-item label="手机号码" prop="phonenumber">
-            <el-input v-model="queryParams.phonenumber" placeholder="请输入手机号码" clearable style="width: 240px" @keyup.enter="handleQuery" />
+            <el-input v-model="form.phonenumber" maxlength="11" placeholder="选填" />
           </el-form-item>
-          <el-form-item label="状态" prop="status">
-            <el-select v-model="queryParams.status" placeholder="用户状态" clearable style="width: 240px">
-              <el-option v-for="dict in sys_normal_disable" :key="dict.value" :label="dict.label" :value="dict.value" />
-            </el-select>
+          <el-form-item label="邮箱" prop="email">
+            <el-input v-model="form.email" maxlength="50" placeholder="选填" />
           </el-form-item>
-          <el-form-item label="创建时间" style="width: 308px">
-            <el-date-picker v-model="dateRange" value-format="YYYY-MM-DD" type="daterange" range-separator="-" start-placeholder="开始日期" end-placeholder="结束日期"></el-date-picker>
+          <el-form-item label="账号状态">
+            <el-radio-group v-model="form.status">
+              <el-radio-button value="0">正常使用</el-radio-button>
+              <el-radio-button value="1">停用</el-radio-button>
+            </el-radio-group>
           </el-form-item>
-          <el-form-item>
-            <el-button type="primary" icon="Search" @click="handleQuery">搜索</el-button>
-            <el-button icon="Refresh" @click="resetQuery">重置</el-button>
-          </el-form-item>
-        </el-form>
+        </div>
 
-        <el-row :gutter="10" class="mb8">
-          <el-col :span="1.5">
-            <el-button type="primary" plain icon="Plus" @click="handleAdd" v-hasPermi="['system:user:add']">新增</el-button>
-          </el-col>
-          <el-col :span="1.5">
-            <el-button type="success" plain icon="Edit" :disabled="single" @click="handleUpdate" v-hasPermi="['system:user:edit']">修改</el-button>
-          </el-col>
-          <el-col :span="1.5">
-            <el-button type="danger" plain icon="Delete" :disabled="multiple" @click="handleDelete" v-hasPermi="['system:user:remove']">删除</el-button>
-          </el-col>
-          <el-col :span="1.5">
-            <el-button type="info" plain icon="Upload" @click="handleImport" v-hasPermi="['system:user:import']">导入</el-button>
-          </el-col>
-          <el-col :span="1.5">
-            <el-button type="warning" plain icon="Download" @click="handleExport" v-hasPermi="['system:user:export']">导出</el-button>
-          </el-col>
-          <right-toolbar v-model:showSearch="showSearch" @queryTable="getList" :columns="columns"></right-toolbar>
-        </el-row>
+        <el-form-item label="账号等级" prop="roleIds" class="identity-form-item">
+          <div class="identity-picker">
+            <button
+              v-for="identity in identities"
+              :key="identity.roleKey"
+              type="button"
+              class="identity-option"
+              :class="[`identity-option--${identity.tone}`, { 'is-selected': selectedIdentity?.roleKey === identity.roleKey }]"
+              :disabled="identity.roleKey === 'admin' || !identity.roleId"
+              @click="selectIdentity(identity)"
+            >
+              <el-icon><component :is="identity.icon" /></el-icon>
+              <span>
+                <strong>{{ identity.label }}</strong>
+                <small>{{ identity.description }}</small>
+              </span>
+              <el-icon v-if="selectedIdentity?.roleKey === identity.roleKey" class="selected-mark"><CircleCheckFilled /></el-icon>
+              <span v-else-if="identity.roleKey === 'admin'" class="built-in-mark">内置</span>
+            </button>
+          </div>
+        </el-form-item>
 
-        <el-table v-loading="loading" :data="userList" @selection-change="handleSelectionChange">
-          <el-table-column type="selection" width="50" align="center" />
-          <el-table-column label="用户编号" align="center" key="userId" prop="userId" v-if="columns.userId.visible" />
-          <el-table-column label="用户名称" align="center" key="userName" v-if="columns.userName.visible" :show-overflow-tooltip="true">
-            <template #default="scope">
-              <a class="link-type" style="cursor:pointer" @click="handleViewData(scope.row)">{{ scope.row.userName }}</a>
-            </template>
-         </el-table-column>
-          <el-table-column label="用户昵称" align="center" key="nickName" prop="nickName" v-if="columns.nickName.visible" :show-overflow-tooltip="true" />
-          <el-table-column label="部门" align="center" key="deptName" prop="dept.deptName" v-if="columns.deptName.visible" :show-overflow-tooltip="true" />
-          <el-table-column label="手机号码" align="center" key="phonenumber" prop="phonenumber" v-if="columns.phonenumber.visible" width="120" />
-          <el-table-column label="状态" align="center" key="status" v-if="columns.status.visible">
-            <template #default="scope">
-              <el-switch
-                v-model="scope.row.status"
-                active-value="0"
-                inactive-value="1"
-                @change="handleStatusChange(scope.row)"
-              ></el-switch>
-            </template>
-          </el-table-column>
-          <el-table-column label="创建时间" align="center" prop="createTime" v-if="columns.createTime.visible" width="160">
-            <template #default="scope">
-              <span>{{ parseTime(scope.row.createTime) }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" align="center" width="150" class-name="small-padding fixed-width">
-            <template #default="scope">
-              <el-tooltip content="修改" placement="top" v-if="scope.row.userId !== 1">
-                <el-button link type="primary" icon="Edit" @click="handleUpdate(scope.row)" v-hasPermi="['system:user:edit']"></el-button>
-              </el-tooltip>
-              <el-tooltip content="删除" placement="top" v-if="scope.row.userId !== 1">
-                <el-button link type="primary" icon="Delete" @click="handleDelete(scope.row)" v-hasPermi="['system:user:remove']"></el-button>
-              </el-tooltip>
-              <el-tooltip content="重置密码" placement="top" v-if="scope.row.userId !== 1">
-                <el-button link type="primary" icon="Key" @click="handleResetPwd(scope.row)" v-hasPermi="['system:user:resetPwd']"></el-button>
-              </el-tooltip>
-              <el-tooltip content="分配角色" placement="top" v-if="scope.row.userId !== 1">
-                <el-button link type="primary" icon="CircleCheck" @click="handleAuthRole(scope.row)" v-hasPermi="['system:user:edit']"></el-button>
-              </el-tooltip>
-            </template>
-          </el-table-column>
-        </el-table>
-        <pagination v-show="total > 0" :total="total" v-model:page="queryParams.pageNum" v-model:limit="queryParams.pageSize" @pagination="getList" />
-      </div>
-    </div>
-    <!-- 添加或修改用户配置对话框 -->
-    <el-dialog :title="title" v-model="open" width="600px" append-to-body>
-      <el-form :model="form" :rules="rules" ref="userRef" label-width="80px">
-        <el-row>
-          <el-col :span="12">
-            <el-form-item label="用户昵称" prop="nickName">
-              <el-input v-model="form.nickName" placeholder="请输入用户昵称" maxlength="30" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="归属部门" prop="deptId">
-              <el-tree-select v-model="form.deptId" :data="enabledDeptOptions" :props="{ value: 'id', label: 'label', children: 'children' }" value-key="id" placeholder="请选择归属部门" clearable check-strictly />
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row>
-          <el-col :span="12">
-            <el-form-item label="手机号码" prop="phonenumber">
-              <el-input v-model="form.phonenumber" placeholder="请输入手机号码" maxlength="11" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="邮箱" prop="email">
-              <el-input v-model="form.email" placeholder="请输入邮箱" maxlength="50" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row>
-          <el-col :span="12">
-            <el-form-item v-if="form.userId == undefined" label="用户名称" prop="userName">
-              <el-input v-model="form.userName" placeholder="请输入用户名称" maxlength="30" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item v-if="form.userId == undefined" label="用户密码" prop="password" :rules="pwdValidator">
-              <el-input v-model="form.password" placeholder="请输入用户密码" type="password" maxlength="20" show-password />
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row>
-          <el-col :span="12">
-            <el-form-item label="用户性别">
-              <el-select v-model="form.sex" placeholder="请选择">
-                <el-option v-for="dict in sys_user_sex" :key="dict.value" :label="dict.label" :value="dict.value"></el-option>
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="状态">
-              <el-radio-group v-model="form.status">
-                <el-radio v-for="dict in sys_normal_disable" :key="dict.value" :value="dict.value">{{ dict.label }}</el-radio>
-              </el-radio-group>
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row>
-          <el-col :span="12">
-            <el-form-item label="岗位">
-              <el-select v-model="form.postIds" multiple placeholder="请选择">
-                <el-option v-for="item in postOptions" :key="item.postId" :label="item.postName" :value="item.postId" :disabled="item.status == 1"></el-option>
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="角色">
-              <el-select v-model="form.roleIds" multiple placeholder="请选择">
-                <el-option v-for="item in roleOptions" :key="item.roleId" :label="item.roleName" :value="item.roleId" :disabled="item.status == 1"></el-option>
-              </el-select>
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row>
-          <el-col :span="24">
-            <el-form-item label="备注">
-              <el-input v-model="form.remark" type="textarea" placeholder="请输入内容"></el-input>
-            </el-form-item>
-          </el-col>
-        </el-row>
+        <el-form-item label="备注">
+          <el-input v-model="form.remark" type="textarea" :rows="2" maxlength="200" show-word-limit placeholder="选填" />
+        </el-form-item>
       </el-form>
       <template #footer>
-        <div class="dialog-footer">
-          <el-button type="primary" @click="submitForm">确 定</el-button>
-          <el-button @click="cancel">取 消</el-button>
-        </div>
+        <el-button @click="closeEditor">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="saveAccount">保存</el-button>
       </template>
     </el-dialog>
-
-    <!-- 用户详情抽屉 -->
-    <user-view-drawer ref="userViewRef" />
-    <!-- 用户导入对话框 -->
-    <excel-import-dialog ref="importUserRef" title="用户导入" action="/system/user/importData" template-action="/system/user/importTemplate" template-file-name="user_template" update-support-label="是否更新已经存在的用户数据" @success="getList" />
-  </div>
+  </main>
 </template>
 
 <script setup lang="ts" name="User">
-import TreePanel from "@/components/TreePanel/index.vue"
-import ExcelImportDialog from "@/components/ExcelImportDialog/index.vue"
-import UserViewDrawer from "./view.vue"
-import { usePasswordRule } from "@/utils/passwordRule"
-import { changeUserStatus, listUser, resetUserPwd, delUser, getUser, updateUser, addUser, deptTreeSelect } from "@/api/system/user"
-import type { SysUser, UserQueryParams, UserFormDataResult } from '@/types/api/system/user'
+import { computed, onMounted, reactive, ref, type Component } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import {
+  Avatar, CircleCheckFilled, Delete, Edit, Key, Lock, Medal, Operation, Plus,
+  Refresh, Search, Star, User, View
+} from '@element-plus/icons-vue'
+import { addUser, changeUserStatus, delUser, getUser, listUser, resetUserPwd, updateUser } from '@/api/system/user'
+import type { SysUser, UserQueryParams } from '@/types/api/system/user'
 import type { SysRole } from '@/types/api/system/role'
-import type { SysPost } from '@/types/api/system/post'
-import type { TreeSelect, TableShowColumns, AjaxResult } from '@/types/api/common'
+import { ACCOUNT_LEVELS, type AccountKind, type AccountTone } from './account-levels'
 
-const router = useRouter()
-const { proxy } = getCurrentInstance()
-const { pwdValidator, pwdPromptValidator } = usePasswordRule()
-const { sys_normal_disable, sys_user_sex } = useDict("sys_normal_disable", "sys_user_sex")
+interface IdentityDefinition {
+  roleKey: string
+  label: string
+  level: string
+  kind: AccountKind
+  tone: AccountTone
+  shortDescription: string
+  description: string
+  icon: Component
+  fixedRoleId?: number
+}
+
+interface ResolvedIdentity extends IdentityDefinition {
+  roleId?: number
+}
+
+const identityIcons: Record<string, Component> = {
+  bge_portal_user: User,
+  bge_customer: Star,
+  bge_priority_customer: Medal,
+  bge_viewer: View,
+  bge_operator: Operation,
+  admin: Lock
+}
+const definitions: IdentityDefinition[] = ACCOUNT_LEVELS.map((item) => ({ ...item, icon: identityIcons[item.roleKey] }))
 
 const userList = ref<SysUser[]>([])
-const open = ref<boolean>(false)
-const loading = ref<boolean>(true)
-const showSearch = ref<boolean>(true)
-const ids = ref<number[]>([])
-const single = ref<boolean>(true)
-const multiple = ref<boolean>(true)
-const total = ref<number>(0)
-const title = ref<string>("")
-const dateRange = ref<string[]>([])
-const deptOptions = ref<TreeSelect[] | undefined>(undefined)
-const enabledDeptOptions = ref<TreeSelect[] | undefined>(undefined)
-const initPassword = ref<string | undefined>(undefined)
-const postOptions = ref<SysPost[]>([])
-const roleOptions = ref<SysRole[]>([])
-// 列显隐信息
-const columns = ref<Record<string, TableShowColumns>>({
-  userId: { label: '用户编号', visible: true },
-  userName: { label: '用户名称', visible: true },
-  nickName: { label: '用户昵称', visible: true },
-  deptName: { label: '部门', visible: true },
-  phonenumber: { label: '手机号码', visible: true },
-  status: { label: '状态', visible: true },
-  createTime: { label: '创建时间', visible: true }
-})
+const roles = ref<SysRole[]>([])
+const loading = ref(false)
+const saving = ref(false)
+const editorOpen = ref(false)
+const editorTitle = ref('新增账号')
+const total = ref(0)
+const userFormRef = ref<any>(null)
+const queryParams = reactive<UserQueryParams>({ pageNum: 1, pageSize: 10, userName: undefined, status: undefined, roleId: undefined })
 
-const data = reactive({
-  form: {} as SysUser,
-  queryParams: {
-    pageNum: 1,
-    pageSize: 10,
-    userName: undefined,
-    phonenumber: undefined,
-    status: undefined,
-    deptId: undefined
-  } as UserQueryParams,
-  rules: {
-    userName: [{ required: true, message: "用户名称不能为空", trigger: "blur" }, { min: 2, max: 20, message: "用户名称长度必须介于 2 和 20 之间", trigger: "blur" }],
-    nickName: [{ required: true, message: "用户昵称不能为空", trigger: "blur" }],
-    email: [{ type: "email", message: "请输入正确的邮箱地址", trigger: ["blur", "change"] }],
-    phonenumber: [{ pattern: /^1[3|4|5|6|7|8|9][0-9]\d{8}$/, message: "请输入正确的手机号码", trigger: "blur" }]
-  }
-})
+function emptyForm(): SysUser {
+  return { userId: undefined, userName: '', nickName: '', password: '', phonenumber: '', email: '', sex: '2', status: '0', remark: '', deptId: undefined, postIds: [], roleIds: [] }
+}
 
-const { queryParams, form, rules } = toRefs(data)
+const form = reactive<SysUser>(emptyForm())
+const rules = {
+  userName: [
+    { required: true, message: '请输入登录账号', trigger: 'blur' },
+    { min: 2, max: 20, message: '登录账号长度为 2–20 位', trigger: 'blur' }
+  ],
+  nickName: [{ required: true, message: '请输入显示名称', trigger: 'blur' }],
+  password: [
+    { required: true, message: '请输入登录密码', trigger: 'blur' },
+    { min: 6, max: 32, message: '密码长度为 6–32 位', trigger: 'blur' },
+    { pattern: /^[^<>"'|\\]+$/, message: '密码不能包含 < > " \' \\ |', trigger: 'blur' }
+  ],
+  phonenumber: [{ pattern: /^1[3-9]\d{9}$/, message: '请输入正确的手机号码', trigger: 'blur' }],
+  email: [{ type: 'email', message: '请输入正确的邮箱地址', trigger: ['blur', 'change'] }],
+  roleIds: [{ type: 'array', required: true, min: 1, message: '请选择一个账号等级', trigger: 'change' }]
+}
 
-/** 查询用户列表 */
-function getList() {
+const identities = computed<ResolvedIdentity[]>(() => definitions.map((definition) => ({
+  ...definition,
+  roleId: definition.fixedRoleId ?? roles.value.find((role) => role.roleKey === definition.roleKey)?.roleId
+})))
+
+const identityGroups = computed(() => [
+  { kind: 'customer', label: '用户等级', icon: Avatar, items: identities.value.filter((item) => item.kind === 'customer') },
+  { kind: 'administrator', label: '管理员等级', icon: Lock, items: identities.value.filter((item) => item.kind === 'administrator') }
+])
+
+const selectedIdentity = computed(() => identities.value.find((identity) => form.roleIds?.includes(identity.roleId ?? -1)))
+const unknownIdentity: ResolvedIdentity = {
+  roleKey: 'unclassified', label: '待归类', level: '--', kind: 'customer', tone: 'gray',
+  shortDescription: '尚未设置等级', description: '编辑账号后选择一个账号等级', icon: User
+}
+
+function identityFor(row: SysUser): ResolvedIdentity {
+  if (row.userId === 1) return identities.value.find((item) => item.roleKey === 'admin') ?? unknownIdentity
+  return identities.value.find((item) => item.roleId === row.roleId) ?? unknownIdentity
+}
+
+function initials(row: SysUser): string {
+  return (row.nickName || row.userName || '?').trim().slice(0, 1).toUpperCase()
+}
+
+function displayTime(value?: string): string {
+  return value ? value.replace('T', ' ').slice(0, 19) : '从未登录'
+}
+
+function mergeRoles(nextRoles: SysRole[]): void {
+  const byKey = new Map(roles.value.map((role) => [role.roleKey, role]))
+  nextRoles.forEach((role) => byKey.set(role.roleKey, role))
+  roles.value = [...byKey.values()]
+}
+
+async function loadRoles(): Promise<void> {
+  const response = await getUser()
+  mergeRoles(response.roles)
+}
+
+async function getList(): Promise<void> {
   loading.value = true
-  listUser(proxy.addDateRange(queryParams.value, dateRange.value)).then(res => {
+  try {
+    const response = await listUser(queryParams)
+    userList.value = response.rows
+    total.value = response.total
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '账号列表加载失败')
+  } finally {
     loading.value = false
-    userList.value = res.rows
-    total.value = res.total
-  })
-}
-
-/** 查询部门下拉树结构 */
-function getDeptTree() {
-  deptTreeSelect().then(response => {
-    deptOptions.value = response.data
-    enabledDeptOptions.value = filterDisabledDept(JSON.parse(JSON.stringify(response.data)))
-  })
-}
-
-/** 过滤禁用的部门 */
-function filterDisabledDept(deptList: TreeSelect[]) {
-  return deptList.filter(dept => {
-    if (dept.disabled) {
-      return false
-    }
-    if (dept.children && dept.children.length) {
-      dept.children = filterDisabledDept(dept.children)
-    }
-    return true
-  })
-}
-
-/** 节点单击事件 */
-function handleNodeClick(data: any) {
-  queryParams.value.deptId = data.id
-  handleQuery()
-}
-
-/** 搜索按钮操作 */
-function handleQuery() {
-  queryParams.value.pageNum = 1
-  getList()
-}
-
-/** 重置按钮操作 */
-function resetQuery() {
-  dateRange.value = []
-  proxy.resetForm("queryRef")
-  queryParams.value.deptId = undefined
-  proxy.$refs.deptTreeRef.setCurrentKey(null)
-  handleQuery()
-}
-
-/** 删除按钮操作 */
-function handleDelete(row?: SysUser) {
-  const userIds = row?.userId || ids.value
-  proxy.$modal.confirm('是否确认删除用户编号为"' + userIds + '"的数据项？').then(function () {
-    return delUser(userIds)
-  }).then(() => {
-    getList()
-    proxy.$modal.msgSuccess("删除成功")
-  }).catch(() => {})
-}
-
-/** 导出按钮操作 */
-function handleExport() {
-  proxy.download("system/user/export", {
-    ...queryParams.value,
-  },`user_${new Date().getTime()}.xlsx`)
-}
-
-/** 用户状态修改  */
-function handleStatusChange(row: SysUser) {
-  const text = row.status === "0" ? "启用" : "停用"
-  proxy.$modal.confirm('确认要"' + text + '""' + row.userName + '"用户吗?').then(function () {
-    return changeUserStatus(row.userId!, row.status!)
-  }).then(() => {
-    proxy.$modal.msgSuccess(text + "成功")
-  }).catch(function () {
-    row.status = row.status === "0" ? "1" : "0"
-  })
-}
-
-/** 更多操作 */
-function handleCommand(command: string, row: SysUser) {
-  switch (command) {
-    case "handleResetPwd":
-      handleResetPwd(row)
-      break
-    case "handleAuthRole":
-      handleAuthRole(row)
-      break
-    default:
-      break
   }
 }
 
-/** 跳转角色分配 */
-function handleAuthRole(row: SysUser) {
-  const userId = row.userId
-  router.push("/system/user-auth/role/" + userId)
+function handleQuery(): void {
+  queryParams.pageNum = 1
+  void getList()
 }
 
-/** 重置密码按钮操作 */
-function handleResetPwd(row: SysUser) {
-  proxy.$prompt(`请输入「${row.userName}」的新密码`, "重置密码", {
-    confirmButtonText: "确定",
-    cancelButtonText: "取消",
-    closeOnClickModal: false,
-    inputValidator: pwdPromptValidator
-  }).then(({ value }: { value: string }) => { 
-    resetUserPwd(row.userId!, value).then(() => {
-      proxy.$modal.msgSuccess("修改成功，新密码是：" + value)
+function resetQuery(): void {
+  Object.assign(queryParams, { pageNum: 1, userName: undefined, status: undefined, roleId: undefined })
+  void getList()
+}
+
+function filterByIdentity(identity: ResolvedIdentity): void {
+  if (!identity.roleId) return
+  queryParams.roleId = queryParams.roleId === identity.roleId ? undefined : identity.roleId
+  handleQuery()
+}
+
+function selectIdentity(identity: ResolvedIdentity): void {
+  if (!identity.roleId || identity.roleKey === 'admin') return
+  form.roleIds = [identity.roleId]
+  userFormRef.value?.validateField('roleIds').catch(() => undefined)
+}
+
+function resetForm(): void {
+  Object.assign(form, emptyForm())
+  userFormRef.value?.clearValidate()
+}
+
+function openCreate(): void {
+  resetForm()
+  const experience = identities.value.find((item) => item.roleKey === 'bge_portal_user')
+  if (experience?.roleId) form.roleIds = [experience.roleId]
+  editorTitle.value = '新增账号'
+  editorOpen.value = true
+}
+
+async function openEdit(row: SysUser): Promise<void> {
+  resetForm()
+  try {
+    const response = await getUser(row.userId)
+    mergeRoles(response.roles)
+    const currentIdentity = identities.value.find((identity) => identity.roleId === row.roleId && identity.roleKey !== 'admin')
+    Object.assign(form, response.data ?? {}, {
+      password: '',
+      roleIds: currentIdentity?.roleId ? [currentIdentity.roleId] : [],
+      postIds: response.postIds ?? []
     })
-  }).catch(() => {})
-}
-
-/** 选择条数  */
-function handleSelectionChange(selection: SysUser[]) {
-  ids.value = selection.map(item => item.userId!)
-  single.value = selection.length != 1
-  multiple.value = !selection.length
-}
-
-/** 详情按钮操作 */
-function handleViewData(row: SysUser) {
-  proxy.$refs["userViewRef"].open(row.userId)
-}
-
-/** 导入按钮操作 */
-function handleImport() {
-  proxy.$refs["importUserRef"].open()
-}
-
-/** 重置操作表单 */
-function reset() {
-  form.value = {
-    userId: undefined,
-    deptId: undefined,
-    userName: undefined,
-    nickName: undefined,
-    password: undefined,
-    phonenumber: undefined,
-    email: undefined,
-    sex: undefined,
-    status: "0",
-    remark: undefined,
-    postIds: [],
-    roleIds: []
+    editorTitle.value = `编辑账号 · ${row.userName}`
+    editorOpen.value = true
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '账号信息加载失败')
   }
-  proxy.resetForm("userRef")
 }
 
-/** 取消按钮 */
-function cancel() {
-  open.value = false
-  reset()
+function closeEditor(): void {
+  editorOpen.value = false
 }
 
-/** 新增按钮操作 */
-function handleAdd() {
-  reset()
-  getUser().then(response => {
-    postOptions.value = response.posts
-    roleOptions.value = response.roles
-    open.value = true
-    title.value = "添加用户"
-    form.value.password = initPassword.value
-  })
+async function saveAccount(): Promise<void> {
+  const valid = await userFormRef.value?.validate().catch(() => false)
+  if (!valid || selectedIdentity.value?.roleKey === 'admin') return
+  saving.value = true
+  try {
+    if (form.userId === undefined) await addUser(form)
+    else await updateUser(form)
+    ElMessage.success(form.userId === undefined ? '账号已创建' : '账号已更新')
+    editorOpen.value = false
+    await getList()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '账号保存失败')
+  } finally {
+    saving.value = false
+  }
 }
 
-/** 修改按钮操作 */
-function handleUpdate(row?: SysUser) {
-  reset()
-  const userId = row?.userId || ids.value[0]
-  getUser(userId).then(response => {
-    form.value = response.data!
-    postOptions.value = response.posts
-    roleOptions.value = response.roles
-    form.value.postIds = response.postIds
-    form.value.roleIds = response.roleIds
-    open.value = true
-    title.value = "修改用户"
-    form.value.password = ""
-  })
+async function changeStatus(row: SysUser): Promise<void> {
+  if (!row.userId || row.userId === 1 || !row.status) return
+  const enabling = row.status === '0'
+  try {
+    await ElMessageBox.confirm(
+      `${enabling ? '启用' : '停用'}后${enabling ? '可以' : '将无法'}登录，确认继续吗？`,
+      `${enabling ? '启用' : '停用'}「${row.userName}」`,
+      { type: enabling ? 'success' : 'warning', confirmButtonText: '确认', cancelButtonText: '取消' }
+    )
+    await changeUserStatus(row.userId, row.status)
+    ElMessage.success(enabling ? '账号已启用' : '账号已停用')
+  } catch {
+    row.status = enabling ? '1' : '0'
+  }
 }
 
-/** 提交按钮 */
-function submitForm() {
-  proxy.$refs["userRef"].validate((valid: boolean) => {
-    if (valid) {
-      if (form.value.userId != undefined) {
-        updateUser(form.value).then(() => {
-          proxy.$modal.msgSuccess("修改成功")
-          open.value = false
-          getList()
-        })
-      } else {
-        addUser(form.value).then(() => {
-          proxy.$modal.msgSuccess("新增成功")
-          open.value = false
-          getList()
-        })
+async function resetPassword(row: SysUser): Promise<void> {
+  if (!row.userId) return
+  try {
+    const result = await ElMessageBox.prompt('请输入 6–32 位新密码', `重置「${row.userName}」的密码`, {
+      confirmButtonText: '确认重置', cancelButtonText: '取消', closeOnClickModal: false,
+      inputType: 'password',
+      inputValidator: (value: string) => {
+        if (value.length < 6 || value.length > 32) return '密码长度必须为 6–32 位'
+        if (!/^[^<>"'|\\]+$/.test(value)) return '密码包含不允许的字符'
+        return true
       }
-    }
-  })
+    })
+    await resetUserPwd(row.userId, result.value)
+    ElMessage.success('密码已重置')
+  } catch {
+    // User cancelled the prompt.
+  }
 }
 
-onMounted(() => {
-  getDeptTree()
-  getList()
-  proxy.getConfigKey("sys.user.initPassword").then((response: AjaxResult) => {
-    initPassword.value = response.msg
-  })
+async function removeAccount(row: SysUser): Promise<void> {
+  if (!row.userId) return
+  try {
+    await ElMessageBox.confirm('删除后该账号不能再登录，历史任务和积分流水仍保留。', `删除「${row.userName}」`, {
+      type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消'
+    })
+    await delUser(row.userId)
+    ElMessage.success('账号已删除')
+    await getList()
+  } catch {
+    // User cancelled the confirmation.
+  }
+}
+
+onMounted(async () => {
+  try {
+    await loadRoles()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '账号等级加载失败')
+  }
+  await getList()
 })
 </script>
+
+<style scoped lang="scss">
+.account-page {
+  min-height: calc(100vh - 84px);
+  padding: 24px;
+  background: #f5f7f6;
+  color: #17231f;
+  letter-spacing: 0;
+}
+
+.page-heading, .list-toolbar, .section-title, .group-label, .account-cell, .contact-cell {
+  display: flex;
+  align-items: center;
+}
+
+.page-heading { justify-content: space-between; gap: 20px; margin-bottom: 22px; }
+.page-kicker { display: block; margin-bottom: 3px; color: #0f766e; font-size: 11px; font-weight: 700; }
+h1, h2, p { margin: 0; }
+h1 { font-size: 26px; line-height: 34px; }
+h2 { font-size: 16px; line-height: 24px; }
+
+.identity-section { padding: 18px 0 22px; border-top: 1px solid #dfe7e3; border-bottom: 1px solid #dfe7e3; }
+.section-title { gap: 10px; }
+.section-title span { color: #718078; font-size: 12px; }
+.identity-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; margin-top: 14px; }
+.identity-group { min-width: 0; }
+.group-label { gap: 7px; margin-bottom: 9px; color: #42524a; font-size: 13px; font-weight: 600; }
+.identity-row, .identity-picker { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+
+.identity-summary, .identity-option {
+  border: 1px solid #dce5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+}
+
+.identity-summary { display: flex; align-items: center; min-width: 0; min-height: 58px; padding: 9px 10px; }
+.identity-summary:hover, .identity-summary.is-active { border-color: #0f766e; box-shadow: 0 0 0 2px rgba(15, 118, 110, .1); }
+.identity-level { flex: 0 0 28px; color: #0f766e; font-size: 11px; font-weight: 800; }
+.identity-copy, .account-cell > span:last-child, .contact-cell { display: flex; min-width: 0; flex-direction: column; }
+.identity-copy strong, .account-cell strong, .identity-option strong { overflow: hidden; font-size: 13px; line-height: 20px; text-overflow: ellipsis; white-space: nowrap; }
+.identity-copy small, .account-cell small, .identity-option small, .contact-cell small { overflow: hidden; color: #7b8882; font-size: 11px; line-height: 17px; text-overflow: ellipsis; white-space: nowrap; }
+
+.account-list { margin-top: 22px; }
+.list-toolbar { justify-content: space-between; gap: 18px; margin-bottom: 12px; }
+.filters { display: flex; align-items: center; justify-content: flex-end; flex: 1; gap: 8px; }
+.search-input { width: min(300px, 34vw); }
+.level-filter { width: 140px; }
+.status-filter { width: 120px; }
+.account-table { width: 100%; border-top: 1px solid #e2e8e5; }
+.account-cell { gap: 10px; }
+
+.avatar {
+  display: grid;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 6px;
+  background: #e7f4ef;
+  color: #0f766e;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.avatar--blue { background: #e9f0fb; color: #315d96; }
+.avatar--gold { background: #fff2d6; color: #8a5d00; }
+.avatar--gray { background: #edf0ef; color: #59645f; }
+.avatar--teal { background: #dff3f1; color: #0b6a63; }
+.avatar--ink { background: #27332f; color: #fff; }
+
+.identity-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 2px 8px;
+  border: 1px solid #cfe4da;
+  border-radius: 999px;
+  background: #edf8f3;
+  color: #19674e;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.identity-badge--blue { border-color: #d5e1f2; background: #f0f5fc; color: #315d96; }
+.identity-badge--gold { border-color: #f1ddb0; background: #fff8e8; color: #8a5d00; }
+.identity-badge--gray { border-color: #dfe3e1; background: #f4f6f5; color: #59645f; }
+.identity-badge--teal { border-color: #badfd9; background: #e8f7f4; color: #0b6a63; }
+.identity-badge--ink { border-color: #27332f; background: #27332f; color: #fff; }
+.scope-copy { color: #56645d; font-size: 12px; }
+.contact-cell { align-items: flex-start; }
+.contact-cell span { font-size: 12px; line-height: 20px; }
+.protected-icon { color: #87928d; font-size: 16px; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
+.identity-picker { width: 100%; }
+
+.identity-option {
+  position: relative;
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) 18px;
+  gap: 8px;
+  min-height: 72px;
+  padding: 11px;
+  align-items: center;
+}
+
+.identity-option:hover:not(:disabled), .identity-option.is-selected { border-color: #0f766e; background: #f1faf7; box-shadow: 0 0 0 2px rgba(15, 118, 110, .1); }
+.identity-option:disabled { cursor: not-allowed; opacity: .58; }
+.identity-option > .el-icon:first-child { color: #0f766e; font-size: 20px; }
+.identity-option > span:nth-child(2) { display: flex; min-width: 0; flex-direction: column; }
+.selected-mark { color: #0f766e; }
+.built-in-mark { color: #69756f; font-size: 10px; }
+
+@media (max-width: 1100px) {
+  .identity-groups { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 760px) {
+  .account-page { padding: 16px; }
+  .page-heading, .list-toolbar { align-items: stretch; flex-direction: column; }
+  .filters { justify-content: flex-start; flex-wrap: wrap; }
+  .search-input { width: 100%; }
+  .identity-row, .identity-picker { grid-template-columns: 1fr; }
+  .form-grid { grid-template-columns: 1fr; }
+}
+</style>

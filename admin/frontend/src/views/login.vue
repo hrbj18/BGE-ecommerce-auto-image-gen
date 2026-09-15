@@ -1,7 +1,18 @@
 <template>
   <div class="login">
-    <el-form ref="loginRef" :model="loginForm" :rules="loginRules" class="login-form">
-      <h3 class="title">{{ title }}</h3>
+    <div class="login-shell">
+      <div class="brand-lockup">
+        <img :src="brandMark" alt="海客" class="brand-mark" />
+        <div>
+          <strong>海客电商生图</strong>
+          <span>HAIKE COMMERCE AI</span>
+        </div>
+      </div>
+      <el-form ref="loginRef" :model="loginForm" :rules="loginRules" class="login-form">
+      <div class="login-heading">
+        <h1>后台管理</h1>
+        <p>{{ title }}</p>
+      </div>
       <el-form-item prop="username">
         <el-input
           v-model="loginForm.username"
@@ -56,7 +67,8 @@
           <router-link class="link-type" :to="'/register'">立即注册</router-link>
         </div>
       </el-form-item>
-    </el-form>
+      </el-form>
+    </div>
     <!--  底部  -->
     <div class="el-login-footer">
       <span>{{ footerContent }}</span>
@@ -72,6 +84,7 @@ import useUserStore from '@/store/modules/user'
 import defaultSettings from '@/settings'
 import type { CaptchaInfoResult } from '@/types/api/login'
 import type { LoginForm } from '@/types/api/login'
+import brandMark from '@/assets/logo/haike-mark.svg'
 
 const title = import.meta.env.VITE_APP_TITLE
 const footerContent = defaultSettings.footerContent
@@ -172,43 +185,123 @@ getCookie()
   display: flex;
   justify-content: center;
   align-items: center;
+  min-height: 620px;
   height: 100%;
-  background-image: url("../assets/images/login-background.jpg");
-  background-size: cover;
+  padding: 32px 20px;
+  box-sizing: border-box;
+  background: #eef3f1;
+  position: relative;
+  overflow: hidden;
+
+  &::before,
+  &::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    pointer-events: none;
+  }
+
+  &::before {
+    top: 0;
+    height: 34%;
+    background: #132824;
+  }
+
+  &::after {
+    top: 34%;
+    height: 4px;
+    background: #2aa899;
+  }
 }
-.title {
-  margin: 0px auto 30px auto;
-  text-align: center;
-  color: #707070;
+
+.login-shell {
+  width: min(420px, 100%);
+  position: relative;
+  z-index: 1;
+}
+
+.brand-lockup {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  margin: 0 0 18px 4px;
+  color: #fff;
+
+  .brand-mark {
+    width: 44px;
+    height: 44px;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+  }
+
+  strong,
+  span {
+    display: block;
+    letter-spacing: 0;
+  }
+
+  strong {
+    font-size: 20px;
+    line-height: 26px;
+  }
+
+  span {
+    margin-top: 1px;
+    color: #a9c9c3;
+    font-size: 11px;
+    line-height: 16px;
+  }
+}
+
+.login-heading {
+  margin-bottom: 26px;
+
+  h1 {
+    margin: 0;
+    color: #18231f;
+    font-size: 24px;
+    line-height: 32px;
+    letter-spacing: 0;
+  }
+
+  p {
+    margin: 5px 0 0;
+    color: #7a8581;
+    font-size: 13px;
+    line-height: 20px;
+  }
 }
 
 .login-form {
-  border-radius: 6px;
+  border-radius: 8px;
   background: #ffffff;
-  width: 400px;
-  padding: 25px 25px 5px 25px;
-  z-index: 1;
+  width: 100%;
+  padding: 32px 32px 12px;
+  box-sizing: border-box;
+  border: 1px solid #dfe8e4;
+  box-shadow: 0 18px 50px rgba(19, 40, 36, 0.16);
+
   .el-input {
-    height: 40px;
+    height: 44px;
+
     input {
-      height: 40px;
+      height: 44px;
     }
   }
+
   .input-icon {
-    height: 39px;
+    height: 43px;
     width: 14px;
-    margin-left: 0px;
+    margin-left: 0;
   }
 }
-.login-tip {
-  font-size: 13px;
-  text-align: center;
-  color: #bfbfbf;
-}
+
 .login-code {
   width: 33%;
-  height: 40px;
+  height: 44px;
   float: right;
+
   img {
     cursor: pointer;
     vertical-align: middle;
@@ -221,21 +314,48 @@ getCookie()
   bottom: 0;
   width: 100%;
   text-align: center;
-  color: #fff;
+  color: #6f7c77;
   font-family: Arial;
   font-size: 12px;
-  letter-spacing: 1px;
+  letter-spacing: 0;
 }
+
 .login-code-img {
-  height: 40px;
+  height: 44px;
   padding-left: 12px;
 }
 
 html.dark .login {
-  background-image: linear-gradient(rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.55)), url("../assets/images/login-background.jpg");
+  background: #101714;
+
+  &::before {
+    background: #09110f;
+  }
+
   .login-form {
     background: var(--el-bg-color-overlay) !important;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    border-color: #32413d;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  }
+
+  .login-heading h1 {
+    color: var(--el-text-color-primary);
+  }
+
+  .el-login-footer {
+    color: #8d9b96;
+  }
+}
+
+@media (max-width: 520px) {
+  .login {
+    align-items: flex-start;
+    min-height: 100%;
+    padding-top: 56px;
+  }
+
+  .login-form {
+    padding: 28px 22px 10px;
   }
 }
 </style>
